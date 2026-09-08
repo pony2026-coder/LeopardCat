@@ -12,6 +12,7 @@
 - 设置页：运行偏好与关于信息
 - Android 宿主：`MethodChannel`、VPN 权限申请和 `VpnService` 生命周期占位
 - 配置转换：Clash YAML 转 sing-box JSON，支持节点、策略组、规则、TUN 和 TLS Fragment
+- 核心桥接：配置 JSON 已传入 Android service，支持 `start`、`reload`、`stop`、`status` 生命周期
 
 当前机器已生成 Android 原生目录并通过 Flutter 分析、测试和真机启动验证。
 
@@ -26,7 +27,7 @@ flutter test
 flutter run -d <android-device-id>
 ```
 
-下一步会将生成的 sing-box JSON 传入 `LeopardCatVpnService`，完成 sing-box/libbox 生命周期和 TUN fd 桥接。
+当前仓库尚未放入 sing-box `libbox.aar`，因此 `LibboxEngineAdapter` 会校验并保存配置后返回 `unavailable`，不会伪造代理核心已运行。下一步是接入对应 ABI 的 `libbox.aar`，实现 TUN fd 和真实核心生命周期。
 
 ## 配置转换
 

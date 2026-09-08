@@ -9,8 +9,20 @@ class AndroidCoreController implements CoreController {
   final MethodChannel _channel;
 
   @override
-  Future<CoreStatus> start() async {
-    final result = await _channel.invokeMethod<String>('start');
+  Future<CoreStatus> start({String? configJson}) async {
+    final result = await _channel.invokeMethod<String>(
+      'start',
+      configJson == null ? null : {'config': configJson},
+    );
+    return _statusFromValue(result);
+  }
+
+  @override
+  Future<CoreStatus> reload(String configJson) async {
+    final result = await _channel.invokeMethod<String>(
+      'reload',
+      {'config': configJson},
+    );
     return _statusFromValue(result);
   }
 

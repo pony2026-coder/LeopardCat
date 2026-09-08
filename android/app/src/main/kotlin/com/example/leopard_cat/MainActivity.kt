@@ -16,7 +16,8 @@ class MainActivity : FlutterActivity() {
 		MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
 			.setMethodCallHandler { call, result ->
 				when (call.method) {
-					"start" -> startCore(result)
+					"start" -> startCore(call.argument("config"), result)
+					"reload" -> reloadCore(call.argument("config"), result)
 					"stop" -> stopCore(result)
 					"status" -> result.success(currentStatus())
 					else -> result.notImplemented()
@@ -24,31 +25,66 @@ class MainActivity : FlutterActivity() {
 			}
 	}
 
-	private fun startCore(result: MethodChannel.Result) {
+	private fun startCore(config: String?, result: MethodChannel.Result) {
+		if (config == null) {
+			result.success("unavailable")
+			return
+		}
 		val permissionIntent = VpnService.prepare(this)
 		if (permissionIntent != null) {
+			pendingConfig = config
 			startActivityForResult(permissionIntent, vpnPermissionRequestCode)
 			result.success("permission_required")
 			return
 		}
 
-		startService(Intent(this, LeopardCatVpnService::class.java))
-		result.success("starting")
+		val serviceIntent = Intent(this, LeopardCatVpnService::class.java)
+		serviceIntent.action = LeopardCatVpnService.ACTION_START
+		serviceIntent.putExtra(LeopardCatVpnService.EXTRA_CONFIG_JSON, config)
+		startService(serviceIntent)
+		result.success("unavailable")
+	}
+
+	private fun reloadCore(config: String?, result: MethodChannel.Result) {
+		if (config == null || LeopardCatVpnService.status == EngineResult.STOPPED) {
+			result.success("stopped")
+			return
+		}
+		val serviceIntent = Intent(this, LeopardCatVpnService::class.java)
+		serviceIntent.action = LeopardCatVpnService.ACTION_RELOAD
+		serviceIntent.putExtra(LeopardCatVpnService.EXTRA_CONFIG_JSON, config)
+		startService(serviceIntent)
+		result.success(currentStatus())
 	}
 
 	private fun stopCore(result: MethodChannel.Result) {
-		stopService(Intent(this, LeopardCatVpnService::class.java))
+		val serviceIntent = Intent(this, LeopardCatVpnService::class.java)
+		serviceIntent.action = LeopardCatVpnService.ACTION_STOP
+		startService(serviceIntent)
 		result.success("stopped")
 	}
 
 	private fun currentStatus(): String {
-		return if (LeopardCatVpnService.isRunning) "running" else "stopped"
+		return when (LeopardCatVpnService.status) {
+			EngineResult.RUNNING -> "running"
+			EngineResult.INVALID_CONFIG -> "unavailable"
+			EngineResult.UNAVAILABLE -> "unavailable"
+			EngineResult.STOPPED -> "stopped"
+		}
 	}
 
 	override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
 		super.onActivityResult(requestCode, resultCode, data)
 		if (requestCode == vpnPermissionRequestCode && resultCode == RESULT_OK) {
-			startService(Intent(this, LeopardCatVpnService::class.java))
+			pendingConfig?.let { config ->
+				val serviceIntent = Intent(this, LeopardCatVpnService::class.java)
+				serviceIntent.action = LeopardCatVpnService.ACTION_START
+				serviceIntent.putExtra(LeopardCatVpnService.EXTRA_CONFIG_JSON, config)
+				startService(serviceIntent)
+			}
+			pendingConfig = null
 		}
 	}
+
+	private var pendingConfig: String? = null
 }

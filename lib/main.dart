@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import 'core/network/android_core_controller.dart';
 import 'core/network/core_controller.dart';
+import 'data/clash/clash_to_singbox_transformer.dart';
 
 void main() {
   runApp(const LeopardCatApp());
@@ -43,12 +44,17 @@ class _ShellPageState extends State<ShellPage> {
   int _selectedIndex = 0;
   bool _isConnected = false;
   final CoreController _coreController = AndroidCoreController();
+  final String _configJson = const ClashToSingboxTransformer().transformYamlToJson('''
+proxies: []
+proxy-groups: []
+rules: []
+''');
 
   Future<void> _toggleCore() async {
     try {
       final status = _isConnected
           ? await _coreController.stop()
-          : await _coreController.start();
+          : await _coreController.start(configJson: _configJson);
       if (!mounted) return;
       setState(() {
         _isConnected = status == CoreStatus.running || status == CoreStatus.starting;

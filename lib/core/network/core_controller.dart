@@ -1,5 +1,6 @@
 abstract interface class CoreController {
-  Future<CoreStatus> start();
+  Future<CoreStatus> start({String? configJson});
+  Future<CoreStatus> reload(String configJson);
   Future<CoreStatus> stop();
   Future<CoreStatus> status();
 }
