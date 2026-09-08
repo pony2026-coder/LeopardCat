@@ -20,6 +20,11 @@ class MainActivity : FlutterActivity() {
 					"reload" -> reloadCore(call.argument("config"), result)
 					"stop" -> stopCore(result)
 					"status" -> result.success(currentStatus())
+					"queryTraffic" -> result.success(mapOf(
+						"uplink_bytes" to LeopardCatVpnService.uplinkBytes,
+						"downlink_bytes" to LeopardCatVpnService.downlinkBytes,
+					))
+					"delayTest" -> result.success(null)
 					else -> result.notImplemented()
 				}
 			}

@@ -38,6 +38,20 @@ class AndroidCoreController implements CoreController {
     return _statusFromValue(result);
   }
 
+  @override
+  Future<TrafficSnapshot> queryTraffic() async {
+    final result = await _channel.invokeMapMethod<String, Object?>('queryTraffic');
+    return TrafficSnapshot(
+      uplinkBytes: _intValue(result?['uplink_bytes']),
+      downlinkBytes: _intValue(result?['downlink_bytes']),
+    );
+  }
+
+  @override
+  Future<int?> delayTest(String outbound) async {
+    return _channel.invokeMethod<int>('delayTest', {'outbound': outbound});
+  }
+
   CoreStatus _statusFromValue(String? value) {
     return switch (value) {
       'starting' => CoreStatus.starting,
@@ -46,5 +60,9 @@ class AndroidCoreController implements CoreController {
       'unavailable' => CoreStatus.unavailable,
       _ => CoreStatus.stopped,
     };
+  }
+
+  int _intValue(Object? value) {
+    return value is int ? value : int.tryParse('$value') ?? 0;
   }
 }

@@ -51,5 +51,11 @@ class LeopardCatVpnService : VpnService() {
 
         @Volatile
         var status: EngineResult = EngineResult.STOPPED
+
+        @Volatile
+        var uplinkBytes: Long = 0
+
+        @Volatile
+        var downlinkBytes: Long = 0
     }
 }
