@@ -11,8 +11,9 @@
 - 配置页：本地/订阅配置列表入口
 - 设置页：运行偏好与关于信息
 - Android 宿主：`MethodChannel`、VPN 权限申请和 `VpnService` 生命周期占位
+- 配置转换：Clash YAML 转 sing-box JSON，支持节点、策略组、规则、TUN 和 TLS Fragment
 
-当前机器已生成 Android 原生目录并通过 Flutter 分析；Android SDK 尚未安装，因此暂时无法构建 APK。
+当前机器已生成 Android 原生目录并通过 Flutter 分析、测试和真机启动验证。
 
 ## 本地运行
 
@@ -25,4 +26,14 @@ flutter test
 flutter run -d <android-device-id>
 ```
 
-下一步会将 `LeopardCatVpnService` 内部接入 sing-box/libbox，并完成 Clash YAML 到 sing-box JSON 的转换。
+下一步会将生成的 sing-box JSON 传入 `LeopardCatVpnService`，完成 sing-box/libbox 生命周期和 TUN fd 桥接。
+
+## 配置转换
+
+转换器位于 `lib/data/clash/clash_to_singbox_transformer.dart`，当前支持：
+
+- `ss`、`vmess`、`vless`、`trojan`、`hysteria2` 节点
+- `select`、`fallback`、`url-test` 策略组
+- `DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR`、`GEOIP`、`MATCH` 规则
+- Android 推荐的 gVisor TUN 入站和 TLS/HTTP sniffing
+- 代理节点 TLS Fragment 与直连 Fragment 参数注入
