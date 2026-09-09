@@ -95,6 +95,10 @@ class ClashToSingboxTransformer {
       case 'shadowsocks':
         outbound['method'] = _string(proxy['cipher']);
         outbound['password'] = _string(proxy['password']);
+        if (_string(proxy['plugin']).isNotEmpty) {
+          outbound['plugin'] = _string(proxy['plugin']);
+          outbound['plugin_opts'] = _string(proxy['plugin-opts']);
+        }
       case 'vmess':
         outbound['uuid'] = _string(proxy['uuid']);
         outbound['security'] = _string(proxy['cipher'], fallback: 'auto');
@@ -109,6 +113,8 @@ class ClashToSingboxTransformer {
         if (_map(proxy['obfs']).isNotEmpty) outbound['obfs'] = _map(proxy['obfs']);
     }
 
+    if (_bool(proxy['udp'])) outbound['network'] = ['tcp', 'udp'];
+
     if (_bool(proxy['tls']) || proxy['servername'] != null || proxy['sni'] != null) {
       final tls = <String, dynamic>{
         'enabled': true,
@@ -122,18 +128,52 @@ class ClashToSingboxTransformer {
           'sleep': fragment.proxySleep,
         };
       }
+      final realityOptions = _map(proxy['reality-opts']);
+      if (realityOptions.isNotEmpty) {
+        tls['reality'] = {
+          'enabled': true,
+          'public_key': _string(realityOptions['public-key']),
+          'short_id': _string(realityOptions['short-id']),
+        };
+        tls['utls'] = {
+          'enabled': true,
+          'fingerprint': _string(proxy['client-fingerprint'], fallback: 'chrome'),
+        };
+      }
       outbound['tls'] = tls;
     }
 
     final network = _string(proxy['network']);
     if (network.isNotEmpty) {
-      outbound['transport'] = {
-        'type': network,
-        if (network == 'ws')
-          'path': _string(_map(proxy['ws-opts'])['path'], fallback: '/'),
-      };
+      outbound['transport'] = _transport(network, proxy);
     }
     return outbound;
+  }
+
+  Map<String, dynamic> _transport(String network, Map<String, dynamic> proxy) {
+    return switch (network) {
+      'ws' => {
+          'type': 'ws',
+          'path': _string(_map(proxy['ws-opts'])['path'], fallback: '/'),
+          if (_map(_map(proxy['ws-opts'])['headers']).isNotEmpty)
+            'headers': _map(_map(proxy['ws-opts'])['headers']),
+        },
+      'grpc' => {
+          'type': 'grpc',
+          'service_name': _string(_map(proxy['grpc-opts'])['grpc-service-name']),
+        },
+      'http' => {
+          'type': 'http',
+          'host': _stringList(_map(proxy['http-opts'])['host']),
+          'path': _string(_map(proxy['http-opts'])['path'], fallback: '/'),
+        },
+      'httpupgrade' => {
+          'type': 'httpupgrade',
+          'host': _string(_map(proxy['http-opts'])['host']),
+          'path': _string(_map(proxy['http-opts'])['path'], fallback: '/'),
+        },
+      _ => {'type': network},
+    };
   }
 
   Map<String, dynamic> _groupToOutbound(Object? value) {

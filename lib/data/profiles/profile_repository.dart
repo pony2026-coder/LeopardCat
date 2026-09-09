@@ -1,0 +1,147 @@
+import 'dart:convert';
+
+import 'package:shared_preferences/shared_preferences.dart';
+
+const defaultProfileContent = '''
+proxies: []
+proxy-groups: []
+rules: []
+''';
+
+class ProxyProfile {
+  const ProxyProfile({
+    required this.id,
+    required this.name,
+    required this.content,
+    required this.updatedAt,
+    this.subscriptionUrl,
+  });
+
+  final String id;
+  final String name;
+  final String content;
+  final DateTime updatedAt;
+    final String? subscriptionUrl;
+
+    Map<String, String> toJson() => {
+        'id': id,
+        'name': name,
+        'content': content,
+        'updatedAt': updatedAt.toIso8601String(),
+      if (subscriptionUrl != null) 'subscriptionUrl': subscriptionUrl!,
+      };
+
+  factory ProxyProfile.fromJson(Map<String, dynamic> json) {
+    return ProxyProfile(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      content: json['content'] as String,
+      updatedAt: DateTime.parse(json['updatedAt'] as String),
+      subscriptionUrl: json['subscriptionUrl'] as String?,
+    );
+  }
+
+  ProxyProfile copyWith({String? content, DateTime? updatedAt}) {
+    return ProxyProfile(
+      id: id,
+      name: name,
+      content: content ?? this.content,
+      updatedAt: updatedAt ?? this.updatedAt,
+      subscriptionUrl: subscriptionUrl,
+    );
+  }
+}
+
+class ProfileState {
+  const ProfileState({required this.profiles, required this.activeProfileId});
+
+  final List<ProxyProfile> profiles;
+  final String activeProfileId;
+
+  factory ProfileState.defaults() {
+    final profile = ProxyProfile(
+      id: 'default',
+      name: '默认',
+      content: defaultProfileContent,
+      updatedAt: DateTime.now(),
+    );
+    return ProfileState(profiles: [profile], activeProfileId: profile.id);
+  }
+
+  ProxyProfile get activeProfile {
+    return profiles.firstWhere(
+      (profile) => profile.id == activeProfileId,
+      orElse: () => profiles.first,
+    );
+  }
+
+  ProfileState copyWith({List<ProxyProfile>? profiles, String? activeProfileId}) {
+    return ProfileState(
+      profiles: profiles ?? this.profiles,
+      activeProfileId: activeProfileId ?? this.activeProfileId,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'activeProfileId': activeProfileId,
+        'profiles': profiles.map((profile) => profile.toJson()).toList(),
+      };
+
+  factory ProfileState.fromJson(Map<String, dynamic> json) {
+    final profiles = (json['profiles'] as List)
+        .cast<Map<Object?, Object?>>()
+        .map((profile) => ProxyProfile.fromJson(profile.cast<String, dynamic>()))
+        .toList();
+    if (profiles.isEmpty) throw const FormatException('No profiles found');
+    final activeProfileId = json['activeProfileId'] as String?;
+    return ProfileState(
+      profiles: profiles,
+      activeProfileId: profiles.any((profile) => profile.id == activeProfileId)
+          ? activeProfileId!
+          : profiles.first.id,
+    );
+  }
+}
+
+abstract interface class ProfileStorage {
+  Future<String?> read();
+  Future<void> write(String value);
+}
+
+class SharedPreferencesProfileStorage implements ProfileStorage {
+  SharedPreferencesProfileStorage({Future<SharedPreferences>? preferences})
+      : _preferences = preferences ?? SharedPreferences.getInstance();
+
+  static const _key = 'leopard_cat.profile_state';
+
+  final Future<SharedPreferences> _preferences;
+
+  @override
+  Future<String?> read() async => (await _preferences).getString(_key);
+
+  @override
+  Future<void> write(String value) async {
+    await (await _preferences).setString(_key, value);
+  }
+}
+
+class ProfileRepository {
+  ProfileRepository({ProfileStorage? storage})
+      : _storage = storage ?? SharedPreferencesProfileStorage();
+
+  final ProfileStorage _storage;
+
+  Future<ProfileState> load() async {
+    final rawState = await _storage.read();
+    if (rawState == null) return ProfileState.defaults();
+    try {
+      return ProfileState.fromJson(jsonDecode(rawState) as Map<String, dynamic>);
+    } on FormatException {
+      return ProfileState.defaults();
+    } on TypeError {
+      return ProfileState.defaults();
+    }
+  }
+
+  Future<void> save(ProfileState state) => _storage.write(jsonEncode(state.toJson()));
+}

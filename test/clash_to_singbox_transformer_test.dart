@@ -71,4 +71,59 @@ rules:
     expect(config['route']['rules'].first['action'], 'sniff');
     expect(config['outbounds'], isNotEmpty);
   });
+
+  test('maps common Clash transport, Reality, UDP, and plugin options', () {
+    const compatibilitySource = '''
+proxies:
+  - name: Reality WS
+    type: vless
+    server: example.com
+    port: 443
+    uuid: 23a65b91-1b77-4c4f-9e23-74b9710f44f2
+    tls: true
+    udp: true
+    client-fingerprint: firefox
+    reality-opts:
+      public-key: test-public-key
+      short-id: abcd
+    network: ws
+    ws-opts:
+      path: /vless
+      headers:
+        Host: edge.example.com
+  - name: Grpc Node
+    type: trojan
+    server: example.com
+    port: 443
+    password: secret
+    tls: true
+    network: grpc
+    grpc-opts:
+      grpc-service-name: tunnel
+  - name: Plugin SS
+    type: ss
+    server: example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+    plugin: obfs-local
+    plugin-opts: obfs=http;obfs-host=example.com
+proxy-groups: []
+rules: []
+''';
+    final outbounds = (const ClashToSingboxTransformer()
+            .transformYaml(compatibilitySource)['outbounds'] as List)
+        .cast<Map<String, dynamic>>();
+    final reality = outbounds.firstWhere((item) => item['tag'] == 'Reality WS');
+    final grpc = outbounds.firstWhere((item) => item['tag'] == 'Grpc Node');
+    final shadowsocks = outbounds.firstWhere((item) => item['tag'] == 'Plugin SS');
+
+    expect(reality['network'], ['tcp', 'udp']);
+    expect(reality['tls']['reality']['public_key'], 'test-public-key');
+    expect(reality['tls']['utls']['fingerprint'], 'firefox');
+    expect(reality['transport']['headers'], {'Host': 'edge.example.com'});
+    expect(grpc['transport'], {'type': 'grpc', 'service_name': 'tunnel'});
+    expect(shadowsocks['plugin'], 'obfs-local');
+    expect(shadowsocks['plugin_opts'], 'obfs=http;obfs-host=example.com');
+  });
 }
