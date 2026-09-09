@@ -20,14 +20,21 @@ class LeopardCatVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "onCreate")
+        activeService = this
         startForegroundServiceNotification()
         platform = AndroidPlatformInterface(this) { descriptor ->
             Log.i(TAG, "TUN created, fd=${descriptor.fd}")
             tunDescriptor = descriptor
         }
-        engine = LibboxEngineAdapter(platform, filesDir.absolutePath) { message ->
-            Log.d(TAG, "sing-box: $message")
-        }
+        engine = LibboxEngineAdapter(
+            platformInterface = platform,
+            basePath = filesDir.absolutePath,
+            onDebugMessage = { message -> Log.d(TAG, "sing-box: $message") },
+            onTrafficChanged = { uplink, downlink ->
+                uplinkBytes = uplink
+                downlinkBytes = downlink
+            },
+        )
         engine.initialize()
     }
 
@@ -57,6 +64,8 @@ class LeopardCatVpnService : VpnService() {
         Log.i(TAG, "onStartCommand: action=${intent?.action}")
         when (intent?.action) {
             ACTION_START -> {
+                uplinkBytes = 0
+                downlinkBytes = 0
                 val config = intent.getStringExtra(EXTRA_CONFIG_JSON)
                 status = if (config == null) {
                     Log.e(TAG, "ACTION_START: missing config")
@@ -92,6 +101,7 @@ class LeopardCatVpnService : VpnService() {
         Log.i(TAG, "onDestroy")
         if (::engine.isInitialized) engine.stop()
         tunDescriptor?.close()
+        activeService = null
         status = EngineResult.STOPPED
         lastError = null
         super.onDestroy()
@@ -118,5 +128,10 @@ class LeopardCatVpnService : VpnService() {
 
         @Volatile
         var lastError: String? = null
+
+        @Volatile
+        private var activeService: LeopardCatVpnService? = null
+
+        fun delayTest(outbound: String): Int? = activeService?.engine?.delayTest(outbound)
     }
 }

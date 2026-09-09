@@ -1,13 +1,24 @@
 package com.example.leopard_cat
 
 import android.util.Log
+import io.nekohasekai.libbox.CommandClient
+import io.nekohasekai.libbox.CommandClientHandler
+import io.nekohasekai.libbox.CommandClientOptions
 import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.CommandServer
 import io.nekohasekai.libbox.CommandServerHandler
+import io.nekohasekai.libbox.ConnectionEvents
+import io.nekohasekai.libbox.LogIterator
+import io.nekohasekai.libbox.OutboundGroupItemIterator
+import io.nekohasekai.libbox.OutboundGroupIterator
 import io.nekohasekai.libbox.OverrideOptions
 import io.nekohasekai.libbox.PlatformInterface
+import io.nekohasekai.libbox.StatusMessage
+import io.nekohasekai.libbox.StringIterator
 import io.nekohasekai.libbox.SystemProxyStatus
 import org.json.JSONObject
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 private const val TAG = "LeopardCatEngine"
 
@@ -17,6 +28,7 @@ interface CoreEngineAdapter {
     fun reload(configJson: String): EngineResult
     fun stop(): EngineResult
     fun lastError(): String?
+    fun delayTest(outbound: String): Int?
 }
 
 enum class EngineResult {
@@ -30,10 +42,17 @@ class LibboxEngineAdapter(
     private val platformInterface: PlatformInterface,
     private val basePath: String,
     private val onDebugMessage: (String) -> Unit = {},
+    private val onTrafficChanged: (uplinkBytes: Long, downlinkBytes: Long) -> Unit = { _, _ -> },
 ) : CoreEngineAdapter {
     private var configJson: String? = null
     private var latestError: String? = null
     private lateinit var commandServer: CommandServer
+    private lateinit var commandClient: CommandClient
+    private var telemetryConnected = false
+    private val telemetryLock = Any()
+    private val outboundDelays = mutableMapOf<String, OutboundDelay>()
+    private val outboundUpdateGenerations = mutableMapOf<String, Long>()
+    private val pendingDelayTests = mutableMapOf<String, PendingDelayTest>()
 
     val version: String
         get() = Libbox.version()
@@ -65,6 +84,7 @@ class LibboxEngineAdapter(
         return try {
             Log.i(TAG, "start: calling startOrReloadService")
             commandServer.startOrReloadService(configJson, OverrideOptions())
+            startTelemetry()
             latestError = null
             Log.i(TAG, "start: service RUNNING")
             EngineResult.RUNNING
@@ -85,6 +105,7 @@ class LibboxEngineAdapter(
         return try {
             Log.i(TAG, "reload: calling startOrReloadService")
             commandServer.startOrReloadService(configJson, OverrideOptions())
+            startTelemetry()
             latestError = null
             Log.i(TAG, "reload: service RUNNING")
             EngineResult.RUNNING
@@ -99,6 +120,7 @@ class LibboxEngineAdapter(
         Log.i(TAG, "stop")
         configJson = null
         latestError = null
+        stopTelemetry()
         if (::commandServer.isInitialized) {
             runCatching { commandServer.closeService() }
             runCatching { commandServer.close() }
@@ -107,6 +129,60 @@ class LibboxEngineAdapter(
     }
 
     override fun lastError(): String? = latestError
+
+    override fun delayTest(outbound: String): Int? {
+        if (outbound.isBlank() || !telemetryConnected) return null
+        val pending = synchronized(telemetryLock) {
+            val previous = outboundDelays[outbound]
+            PendingDelayTest(
+                previousGeneration = outboundUpdateGenerations[outbound] ?: 0,
+                startedAtSeconds = TimeUnit.MILLISECONDS.toSeconds(System.currentTimeMillis()),
+            ).also { pendingDelayTests[outbound] = it }
+        }
+        return try {
+            commandClient.urlTest(outbound)
+            if (pending.result.await(urlTestTimeoutSeconds, TimeUnit.SECONDS)) {
+                pending.delay
+            } else {
+                null
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "url test failed for $outbound", t)
+            null
+        } finally {
+            synchronized(telemetryLock) {
+                if (pendingDelayTests[outbound] === pending) {
+                    pendingDelayTests.remove(outbound)
+                }
+            }
+        }
+    }
+
+    private fun startTelemetry() {
+        if (!::commandClient.isInitialized) {
+            val options = CommandClientOptions().apply {
+                addCommand(Libbox.CommandStatus)
+                addCommand(Libbox.CommandOutbounds)
+                statusInterval = TimeUnit.SECONDS.toNanos(1)
+            }
+            commandClient = CommandClient(TelemetryHandler(), options)
+        }
+        if (!telemetryConnected) {
+            commandClient.connect()
+            telemetryConnected = true
+        }
+    }
+
+    private fun stopTelemetry() {
+        if (::commandClient.isInitialized) {
+            runCatching { commandClient.disconnect() }
+        }
+        telemetryConnected = false
+        synchronized(telemetryLock) {
+            pendingDelayTests.values.forEach { it.result.countDown() }
+            pendingDelayTests.clear()
+        }
+    }
 
     private inner class ServerHandler : CommandServerHandler {
         override fun connectSSHAgent(): Int = -1
@@ -127,6 +203,56 @@ class LibboxEngineAdapter(
         }
     }
 
+    private inner class TelemetryHandler : CommandClientHandler {
+        override fun clearLogs() = Unit
+
+        override fun connected() {
+            Log.i(TAG, "telemetry command client connected")
+        }
+
+        override fun disconnected(message: String) {
+            Log.d(TAG, "telemetry command client disconnected: $message")
+        }
+
+        override fun initializeClashMode(modeList: StringIterator, currentMode: String) = Unit
+
+        override fun setDefaultLogLevel(level: Int) = Unit
+
+        override fun updateClashMode(newMode: String) = Unit
+
+        override fun writeConnectionEvents(events: ConnectionEvents) = Unit
+
+        override fun writeGroups(message: OutboundGroupIterator) = Unit
+
+        override fun writeLogs(messageList: LogIterator) = Unit
+
+        override fun writeStatus(message: StatusMessage) {
+            if (message.trafficAvailable) {
+                onTrafficChanged(
+                    message.uplinkTotal.coerceAtLeast(0),
+                    message.downlinkTotal.coerceAtLeast(0),
+                )
+            }
+        }
+
+        override fun writeOutbounds(message: OutboundGroupItemIterator) {
+            while (message.hasNext()) {
+                val item = message.next()
+                synchronized(telemetryLock) {
+                    val delay = OutboundDelay(item.getURLTestTime(), item.getURLTestDelay())
+                    outboundDelays[item.tag] = delay
+                    val generation = (outboundUpdateGenerations[item.tag] ?: 0) + 1
+                    outboundUpdateGenerations[item.tag] = generation
+                    val pending = pendingDelayTests[item.tag] ?: continue
+                    if (generation > pending.previousGeneration && delay.testTime >= pending.startedAtSeconds) {
+                        pending.delay = delay.value
+                        pending.result.countDown()
+                    }
+                }
+            }
+        }
+    }
+
     private fun isValidSingboxConfig(configJson: String): Boolean {
         return try {
             val config = JSONObject(configJson)
@@ -143,5 +269,19 @@ class LibboxEngineAdapter(
             Log.e(TAG, "checkConfig failed", t)
             false
         }
+    }
+
+    private data class OutboundDelay(val testTime: Long, val value: Int)
+
+    private class PendingDelayTest(
+        val previousGeneration: Long,
+        val startedAtSeconds: Long,
+    ) {
+        val result = CountDownLatch(1)
+        var delay: Int? = null
+    }
+
+    private companion object {
+        const val urlTestTimeoutSeconds = 15L
     }
 }

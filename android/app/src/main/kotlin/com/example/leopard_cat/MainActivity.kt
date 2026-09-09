@@ -63,7 +63,7 @@ class MainActivity : FlutterActivity() {
 						"uplink_bytes" to LeopardCatVpnService.uplinkBytes,
 						"downlink_bytes" to LeopardCatVpnService.downlinkBytes,
 					))
-					"delayTest" -> result.success(null)
+					"delayTest" -> delayTest(call.argument("outbound"), result)
 					else -> result.notImplemented()
 				}
 			}
@@ -106,6 +106,17 @@ class MainActivity : FlutterActivity() {
 		serviceIntent.action = LeopardCatVpnService.ACTION_STOP
 		startVpnService(serviceIntent)
 		result.success("stopped")
+	}
+
+	private fun delayTest(outbound: String?, result: MethodChannel.Result) {
+		if (outbound.isNullOrBlank()) {
+			result.success(null)
+			return
+		}
+		Thread {
+			val delay = LeopardCatVpnService.delayTest(outbound)
+			runOnUiThread { result.success(delay) }
+		}.start()
 	}
 
 	private fun currentStatus(): String {

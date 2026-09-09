@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -44,6 +46,8 @@ class _ShellPageState extends State<ShellPage> {
   int _selectedIndex = 0;
   bool _isConnected = false;
   String? _coreError;
+  TrafficSnapshot _traffic = const TrafficSnapshot(uplinkBytes: 0, downlinkBytes: 0);
+  Timer? _trafficTimer;
   final CoreController _coreController = AndroidCoreController();
   final String _configJson = const ClashToSingboxTransformer().transformYamlToJson('''
 proxies: []
@@ -63,7 +67,11 @@ rules: []
       setState(() {
         _isConnected = resolvedStatus == CoreStatus.running;
         _coreError = _coreController.lastError;
+        if (!_isConnected) {
+          _traffic = const TrafficSnapshot(uplinkBytes: 0, downlinkBytes: 0);
+        }
       });
+      _syncTrafficPolling();
     } on PlatformException {
       if (mounted) {
         setState(() {
@@ -92,12 +100,37 @@ rules: []
     return _coreController.status();
   }
 
+  void _syncTrafficPolling() {
+    _trafficTimer?.cancel();
+    if (!_isConnected) return;
+    _refreshTraffic();
+    _trafficTimer = Timer.periodic(const Duration(seconds: 1), (_) => _refreshTraffic());
+  }
+
+  Future<void> _refreshTraffic() async {
+    try {
+      final traffic = await _coreController.queryTraffic();
+      if (mounted && _isConnected) setState(() => _traffic = traffic);
+    } on PlatformException {
+      // The connection state is handled independently by the core status bridge.
+    } on MissingPluginException {
+      // The connection state is handled independently by the core status bridge.
+    }
+  }
+
+  @override
+  void dispose() {
+    _trafficTimer?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final pages = <Widget>[
       HomePage(
         isConnected: _isConnected,
         errorMessage: _coreError,
+        traffic: _traffic,
         onToggleConnection: _toggleCore,
       ),
       const ProfilesPage(),
@@ -221,12 +254,14 @@ class HomePage extends StatelessWidget {
   const HomePage({
     required this.isConnected,
     required this.errorMessage,
+    required this.traffic,
     required this.onToggleConnection,
     super.key,
   });
 
   final bool isConnected;
   final String? errorMessage;
+  final TrafficSnapshot traffic;
   final Future<void> Function() onToggleConnection;
 
   @override
@@ -249,7 +284,7 @@ class HomePage extends StatelessWidget {
                 onToggle: onToggleConnection,
               ),
               const SizedBox(height: 18),
-              const _TrafficOverview(),
+              _TrafficOverview(traffic: traffic),
               const SizedBox(height: 18),
               const _SectionTitle(title: '当前状态', action: '查看日志'),
               const SizedBox(height: 10),
@@ -332,31 +367,40 @@ class _ConnectionCard extends StatelessWidget {
 }
 
 class _TrafficOverview extends StatelessWidget {
-  const _TrafficOverview();
+  const _TrafficOverview({required this.traffic});
+
+  final TrafficSnapshot traffic;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
       decoration: BoxDecoration(color: const Color(0xFF191B20), borderRadius: BorderRadius.circular(20)),
-      child: const Column(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('流量概览', style: TextStyle(color: Color(0xFF9B9FA9), fontSize: 13)),
-          SizedBox(height: 16),
+          const Text('流量概览', style: TextStyle(color: Color(0xFF9B9FA9), fontSize: 13)),
+          const SizedBox(height: 16),
           Row(
             children: [
-              Expanded(child: _Metric(label: '下载', value: '0 B/s', icon: Icons.arrow_downward, color: Color(0xFF63C7D8))),
-              SizedBox(width: 20),
-              Expanded(child: _Metric(label: '上传', value: '0 B/s', icon: Icons.arrow_upward, color: Color(0xFFF0A35B))),
-              SizedBox(width: 20),
-              Expanded(child: _Metric(label: '总计', value: '0 B', icon: Icons.data_usage, color: Color(0xFF9F84F7))),
+              Expanded(child: _Metric(label: '下载', value: _formatBytes(traffic.downlinkBytes), icon: Icons.arrow_downward, color: const Color(0xFF63C7D8))),
+              const SizedBox(width: 20),
+              Expanded(child: _Metric(label: '上传', value: _formatBytes(traffic.uplinkBytes), icon: Icons.arrow_upward, color: const Color(0xFFF0A35B))),
+              const SizedBox(width: 20),
+              Expanded(child: _Metric(label: '总计', value: _formatBytes(traffic.uplinkBytes + traffic.downlinkBytes), icon: Icons.data_usage, color: const Color(0xFF9F84F7))),
             ],
           ),
         ],
       ),
     );
   }
+}
+
+String _formatBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
 }
 
 class _Metric extends StatelessWidget {
