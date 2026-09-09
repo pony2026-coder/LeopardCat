@@ -307,6 +307,90 @@ class _ShellPageState extends State<ShellPage> {
     }
   }
 
+  Future<void> _showProfileDetails(String profileId) {
+    final profile = _profileState.profiles.firstWhere((item) => item.id == profileId);
+    return showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(profile.name),
+        content: SizedBox(
+          width: 560,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(profile.subscriptionUrl == null ? '本地配置' : '订阅地址'),
+              if (profile.subscriptionUrl != null) ...[
+                const SizedBox(height: 4),
+                SelectableText(profile.subscriptionUrl!),
+              ],
+              const SizedBox(height: 16),
+              const Text('Clash YAML'),
+              const SizedBox(height: 8),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: SelectableText(profile.content),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteProfile(String profileId) async {
+    final profile = _profileState.profiles.firstWhere((item) => item.id == profileId);
+    if (_profileState.profiles.length <= 1) {
+      _showProfileMessage('至少保留一个配置');
+      return;
+    }
+    final label = profile.subscriptionUrl == null ? '配置' : '订阅';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('删除$label'),
+        content: Text('确定删除“${profile.name}”吗？此操作无法撤销。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final wasActive = _profileState.activeProfileId == profileId;
+    final nextState = _profileState.removeProfile(profileId);
+    await _profileRepository.save(nextState);
+    if (!mounted) return;
+    setState(() {
+      _profileState = nextState;
+      if (wasActive) {
+        _lastDelay = null;
+        _delayMessage = null;
+      }
+    });
+    if (!wasActive || !_isConnected) return;
+    try {
+      final status = await _coreController.reload(_configJson);
+      if (!mounted) return;
+      setState(() {
+        _isConnected = status == CoreStatus.running;
+        _coreError = _coreController.lastError;
+      });
+      _syncTrafficPolling();
+    } on PlatformException {
+      if (mounted) setState(() => _coreError = '无法重载当前配置');
+    }
+  }
+
   void _showProfileMessage(String message) {
     if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
@@ -361,13 +445,14 @@ class _ShellPageState extends State<ShellPage> {
         activeProfileId: _profileState.activeProfileId,
         isLoading: !_profilesLoaded,
         onSelect: _selectProfile,
+        onView: _showProfileDetails,
+        onDelete: _deleteProfile,
         onAdd: _addProfile,
         onImportSubscription: _importSubscription,
         onRefreshSubscription: _refreshSubscription,
       ),
       const SettingsPage(),
     ];
-
     return LayoutBuilder(
       builder: (context, constraints) {
         final isWide = constraints.maxWidth >= 720;
@@ -682,6 +767,8 @@ class ProfilesPage extends StatelessWidget {
     required this.activeProfileId,
     required this.isLoading,
     required this.onSelect,
+    required this.onView,
+    required this.onDelete,
     required this.onAdd,
     required this.onImportSubscription,
     required this.onRefreshSubscription,
@@ -692,6 +779,8 @@ class ProfilesPage extends StatelessWidget {
   final String activeProfileId;
   final bool isLoading;
   final ValueChanged<String> onSelect;
+  final ValueChanged<String> onView;
+  final ValueChanged<String> onDelete;
   final Future<void> Function() onAdd;
   final Future<void> Function() onImportSubscription;
   final ValueChanged<String> onRefreshSubscription;
@@ -715,6 +804,8 @@ class ProfilesPage extends StatelessWidget {
               detail: '本地配置 · ${profile.updatedAt.year}-${profile.updatedAt.month.toString().padLeft(2, '0')}-${profile.updatedAt.day.toString().padLeft(2, '0')}',
               active: profile.id == activeProfileId,
               onTap: () => onSelect(profile.id),
+              onView: () => onView(profile.id),
+              onDelete: profiles.length > 1 ? () => onDelete(profile.id) : null,
               onRefresh: profile.subscriptionUrl == null ? null : () => onRefreshSubscription(profile.id),
             )),
     ]);
@@ -722,11 +813,21 @@ class ProfilesPage extends StatelessWidget {
 }
 
 class _ProfileTile extends StatelessWidget {
-  const _ProfileTile({required this.name, required this.detail, required this.active, required this.onTap, this.onRefresh});
+  const _ProfileTile({
+    required this.name,
+    required this.detail,
+    required this.active,
+    required this.onTap,
+    required this.onView,
+    this.onDelete,
+    this.onRefresh,
+  });
   final String name;
   final String detail;
   final bool active;
   final VoidCallback onTap;
+  final VoidCallback onView;
+  final VoidCallback? onDelete;
   final VoidCallback? onRefresh;
 
   @override
@@ -740,9 +841,16 @@ class _ProfileTile extends StatelessWidget {
         leading: Icon(active ? Icons.radio_button_checked : Icons.radio_button_off, color: active ? const Color(0xFFB7F36B) : const Color(0xFF626772)),
         title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
         subtitle: Text(detail),
-        trailing: onRefresh == null
-          ? const Icon(Icons.chevron_right)
-          : IconButton(tooltip: '更新订阅', onPressed: onRefresh, icon: const Icon(Icons.refresh)),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(tooltip: '查看配置', onPressed: onView, icon: const Icon(Icons.visibility_outlined)),
+            if (onRefresh != null)
+              IconButton(tooltip: '更新订阅', onPressed: onRefresh, icon: const Icon(Icons.refresh)),
+            if (onDelete != null)
+              IconButton(tooltip: '删除配置', onPressed: onDelete, icon: const Icon(Icons.delete_outline)),
+          ],
+        ),
       ),
     );
   }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -15,10 +16,14 @@ abstract interface class SubscriptionClient {
 }
 
 class HttpSubscriptionClient implements SubscriptionClient {
-  HttpSubscriptionClient({HttpClient? httpClient})
-      : _httpClient = httpClient ?? HttpClient();
+  HttpSubscriptionClient({HttpClient? httpClient, Duration? timeout})
+      : _httpClient = httpClient ?? HttpClient(),
+        _timeout = timeout ?? const Duration(seconds: 20) {
+    _httpClient.connectionTimeout = _timeout;
+  }
 
   final HttpClient _httpClient;
+  final Duration _timeout;
 
   @override
   Future<String> fetch(Uri uri) async {
@@ -26,12 +31,14 @@ class HttpSubscriptionClient implements SubscriptionClient {
       throw const SubscriptionException('订阅地址必须使用 HTTP 或 HTTPS');
     }
     try {
-      final request = await _httpClient.getUrl(uri);
-      final response = await request.close();
+      final request = await _httpClient.getUrl(uri).timeout(_timeout);
+      final response = await request.close().timeout(_timeout);
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw SubscriptionException('订阅服务器返回 HTTP ${response.statusCode}');
       }
-      return await response.transform(utf8.decoder).join();
+      return await response.transform(utf8.decoder).join().timeout(_timeout);
+    } on TimeoutException {
+      throw const SubscriptionException('下载订阅超时');
     } on SocketException {
       throw const SubscriptionException('无法连接订阅服务器');
     } on HttpException {

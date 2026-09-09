@@ -37,6 +37,27 @@ void main() {
     expect(state.profiles, hasLength(1));
     expect(state.activeProfile.id, 'default');
   });
+
+  test('removing the active profile selects a remaining profile', () {
+    final first = ProxyProfile(
+      id: 'first',
+      name: '第一个',
+      content: defaultProfileContent,
+      updatedAt: DateTime.utc(2026),
+    );
+    final second = ProxyProfile(
+      id: 'second',
+      name: '第二个',
+      content: defaultProfileContent,
+      updatedAt: DateTime.utc(2026),
+    );
+
+    final state = ProfileState(profiles: [first, second], activeProfileId: second.id);
+    final updated = state.removeProfile(second.id);
+
+    expect(updated.profiles, [first]);
+    expect(updated.activeProfileId, first.id);
+  });
 }
 
 class _MemoryProfileStorage implements ProfileStorage {

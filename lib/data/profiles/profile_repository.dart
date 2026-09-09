@@ -82,6 +82,20 @@ class ProfileState {
     );
   }
 
+  ProfileState removeProfile(String profileId) {
+    if (profiles.length <= 1) {
+      throw StateError('At least one profile must remain');
+    }
+    final remainingProfiles = profiles.where((profile) => profile.id != profileId).toList();
+    if (remainingProfiles.length == profiles.length) return this;
+    return ProfileState(
+      profiles: remainingProfiles,
+      activeProfileId: activeProfileId == profileId
+          ? remainingProfiles.first.id
+          : activeProfileId,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
         'activeProfileId': activeProfileId,
         'profiles': profiles.map((profile) => profile.toJson()).toList(),
