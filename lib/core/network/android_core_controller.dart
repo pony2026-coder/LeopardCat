@@ -46,6 +46,11 @@ class AndroidCoreController implements CoreController {
   }
 
   @override
+  Future<String> coreVersion() async {
+    return (await _channel.invokeMethod<String>('coreVersion')) ?? '未知版本';
+  }
+
+  @override
   Future<TrafficSnapshot> queryTraffic() async {
     final result = await _channel.invokeMapMethod<String, Object?>('queryTraffic');
     return TrafficSnapshot(
@@ -57,6 +62,15 @@ class AndroidCoreController implements CoreController {
   @override
   Future<int?> delayTest(String outbound) async {
     return _channel.invokeMethod<int>('delayTest', {'outbound': outbound});
+  }
+
+  @override
+  Future<bool> selectOutbound(String group, String outbound) async {
+    return (await _channel.invokeMethod<bool>(
+          'selectOutbound',
+          {'group': group, 'outbound': outbound},
+        )) ??
+        false;
   }
 
   CoreStatus _statusFromValue(String? value) {

@@ -25,18 +25,18 @@ rules:
   - DOMAIN-SUFFIX,apple.com,DIRECT
   - IP-CIDR,1.1.1.1/32,REJECT,no-resolve
   - GEOIP,CN,DIRECT
+  - GEOIP,LAN,DIRECT
   - MATCH,Proxy
 ''';
 
-  test('maps Clash nodes and injects TLS fragment settings', () {
+  test('maps Clash nodes and enables sing-box TLS fragmentation', () {
     final config = const ClashToSingboxTransformer().transformYaml(source);
     final outbounds = (config['outbounds'] as List).cast<Map<String, dynamic>>();
     final node = outbounds.firstWhere((item) => item['tag'] == 'Secure Node');
 
     expect(node['type'], 'vless');
     expect(node['server_port'], 443);
-    expect(node['tls']['fragment']['enabled'], isTrue);
-    expect(node['tls']['fragment']['size'], '10-35');
+    expect(node['tls']['fragment'], isTrue);
   });
 
   test('maps Clash groups and routing rules', () {
@@ -44,6 +44,7 @@ rules:
     final outbounds = (config['outbounds'] as List).cast<Map<String, dynamic>>();
     final route = config['route'] as Map<String, dynamic>;
     final rules = (route['rules'] as List).cast<Map<String, dynamic>>();
+    final ruleSets = (route['rule_set'] as List).cast<Map<String, dynamic>>();
     final group = outbounds.firstWhere((item) => item['tag'] == 'Proxy');
 
     expect(group['type'], 'selector');
@@ -54,7 +55,16 @@ rules:
     expect(rules[2]['domain_suffix'], ['.apple.com']);
     expect(rules[3]['ip_cidr'], ['1.1.1.1/32']);
     expect(rules[4]['rule_set'], 'geoip-cn');
-    expect(rules[5]['outbound'], 'Proxy');
+    expect(rules[5]['ip_is_private'], isTrue);
+    expect(rules[6]['outbound'], 'Proxy');
+    expect(ruleSets, [
+      {
+        'type': 'remote',
+        'tag': 'geoip-cn',
+        'format': 'binary',
+        'url': 'https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs',
+      },
+    ]);
   });
 
   test('produces valid JSON and sing-box v1.14 mobile defaults', () {

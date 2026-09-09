@@ -5,8 +5,10 @@ abstract interface class CoreController {
   Future<CoreStatus> reload(String configJson);
   Future<CoreStatus> stop();
   Future<CoreStatus> status();
+  Future<String> coreVersion();
   Future<TrafficSnapshot> queryTraffic();
   Future<int?> delayTest(String outbound);
+  Future<bool> selectOutbound(String group, String outbound);
 }
 
 class TrafficSnapshot {

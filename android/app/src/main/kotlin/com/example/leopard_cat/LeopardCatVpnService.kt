@@ -91,6 +91,7 @@ class LeopardCatVpnService : VpnService() {
                 Log.i(TAG, "ACTION_STOP")
                 status = engine.stop()
                 lastError = null
+                stopForegroundService()
                 stopSelf()
             }
         }
@@ -101,10 +102,21 @@ class LeopardCatVpnService : VpnService() {
         Log.i(TAG, "onDestroy")
         if (::engine.isInitialized) engine.stop()
         tunDescriptor?.close()
+        tunDescriptor = null
+        stopForegroundService()
         activeService = null
         status = EngineResult.STOPPED
         lastError = null
         super.onDestroy()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun stopForegroundService() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            stopForeground(true)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? {
@@ -133,5 +145,8 @@ class LeopardCatVpnService : VpnService() {
         private var activeService: LeopardCatVpnService? = null
 
         fun delayTest(outbound: String): Int? = activeService?.engine?.delayTest(outbound)
+
+        fun selectOutbound(group: String, outbound: String): Boolean =
+            activeService?.engine?.selectOutbound(group, outbound) ?: false
     }
 }

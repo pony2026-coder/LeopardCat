@@ -2,6 +2,7 @@ package com.example.leopard_cat
 
 import android.content.Intent
 import android.net.VpnService
+import io.nekohasekai.libbox.Libbox
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
@@ -63,7 +64,13 @@ class MainActivity : FlutterActivity() {
 						"uplink_bytes" to LeopardCatVpnService.uplinkBytes,
 						"downlink_bytes" to LeopardCatVpnService.downlinkBytes,
 					))
+					"coreVersion" -> result.success(Libbox.version())
 					"delayTest" -> delayTest(call.argument("outbound"), result)
+					"selectOutbound" -> selectOutbound(
+						call.argument("group"),
+						call.argument("outbound"),
+						result,
+					)
 					else -> result.notImplemented()
 				}
 			}
@@ -116,6 +123,17 @@ class MainActivity : FlutterActivity() {
 		Thread {
 			val delay = LeopardCatVpnService.delayTest(outbound)
 			runOnUiThread { result.success(delay) }
+		}.start()
+	}
+
+	private fun selectOutbound(group: String?, outbound: String?, result: MethodChannel.Result) {
+		if (group.isNullOrBlank() || outbound.isNullOrBlank()) {
+			result.success(false)
+			return
+		}
+		Thread {
+			val selected = LeopardCatVpnService.selectOutbound(group, outbound)
+			runOnUiThread { result.success(selected) }
 		}.start()
 	}
 

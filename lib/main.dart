@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'core/network/android_core_controller.dart';
 import 'core/network/core_controller.dart';
 import 'data/clash/clash_to_singbox_transformer.dart';
+import 'data/clash/proxy_group.dart';
 import 'data/profiles/profile_repository.dart';
 import 'data/subscription/subscription_client.dart';
 import 'data/subscription/subscription_service.dart';
@@ -53,6 +54,10 @@ class _ShellPageState extends State<ShellPage> {
   int? _lastDelay;
   bool _isDelayTesting = false;
   String? _delayMessage;
+  String _coreVersion = '读取中...';
+  final Map<String, String> _selectedOutbounds = {};
+  final Map<String, int?> _outboundDelays = {};
+  final Set<String> _testingOutbounds = {};
   Timer? _trafficTimer;
   final CoreController _coreController = AndroidCoreController();
   final ProfileRepository _profileRepository = ProfileRepository();
@@ -73,10 +78,25 @@ class _ShellPageState extends State<ShellPage> {
     return outbound == 'DIRECT' || outbound == 'REJECT' ? null : outbound;
   }
 
+  List<ClashProxyGroup> get _proxyGroups =>
+      parseClashProxyGroups(_profileState.activeProfile.content);
+
   @override
   void initState() {
     super.initState();
     _loadProfiles();
+    _loadCoreVersion();
+  }
+
+  Future<void> _loadCoreVersion() async {
+    try {
+      final version = await _coreController.coreVersion();
+      if (mounted) setState(() => _coreVersion = version);
+    } on PlatformException {
+      if (mounted) setState(() => _coreVersion = '不可用');
+    } on MissingPluginException {
+      if (mounted) setState(() => _coreVersion = '仅支持 Android');
+    }
   }
 
   Future<void> _loadProfiles() async {
@@ -155,7 +175,11 @@ class _ShellPageState extends State<ShellPage> {
     final nextState = _profileState.copyWith(activeProfileId: profileId);
     await _profileRepository.save(nextState);
     if (!mounted) return;
-    setState(() => _profileState = nextState);
+    setState(() {
+      _profileState = nextState;
+      _selectedOutbounds.clear();
+      _outboundDelays.clear();
+    });
     _lastDelay = null;
     _delayMessage = null;
     if (!_isConnected) return;
@@ -174,42 +198,10 @@ class _ShellPageState extends State<ShellPage> {
   }
 
   Future<void> _addProfile() async {
-    final nameController = TextEditingController();
-    final contentController = TextEditingController(text: defaultProfileContent);
     final result = await showDialog<_ProfileDraft>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('添加本地配置'),
-        content: SizedBox(
-          width: 520,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(controller: nameController, decoration: const InputDecoration(labelText: '名称')),
-              const SizedBox(height: 12),
-              TextField(
-                controller: contentController,
-                decoration: const InputDecoration(labelText: 'Clash YAML'),
-                minLines: 6,
-                maxLines: 10,
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          FilledButton(
-            onPressed: () => Navigator.pop(
-              context,
-              _ProfileDraft(nameController.text.trim(), contentController.text),
-            ),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
+      builder: (context) => const _ProfileFormDialog(),
     );
-    nameController.dispose();
-    contentController.dispose();
     if (result == null || result.name.isEmpty || result.content.trim().isEmpty) return;
 
     try {
@@ -226,7 +218,11 @@ class _ShellPageState extends State<ShellPage> {
       );
       await _profileRepository.save(nextState);
       if (!mounted) return;
-      setState(() => _profileState = nextState);
+      setState(() {
+        _profileState = nextState;
+        _selectedOutbounds.clear();
+        _outboundDelays.clear();
+      });
     } on FormatException {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Clash YAML 格式无效')));
@@ -234,38 +230,10 @@ class _ShellPageState extends State<ShellPage> {
   }
 
   Future<void> _importSubscription() async {
-    final nameController = TextEditingController();
-    final urlController = TextEditingController();
     final result = await showDialog<_SubscriptionDraft>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('导入订阅'),
-        content: SizedBox(
-          width: 420,
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(controller: nameController, decoration: const InputDecoration(labelText: '名称')),
-            const SizedBox(height: 12),
-            TextField(
-              controller: urlController,
-              decoration: const InputDecoration(labelText: '订阅地址'),
-              keyboardType: TextInputType.url,
-            ),
-          ]),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          FilledButton(
-            onPressed: () => Navigator.pop(
-              context,
-              _SubscriptionDraft(nameController.text.trim(), urlController.text.trim()),
-            ),
-            child: const Text('导入'),
-          ),
-        ],
-      ),
+      builder: (context) => const _SubscriptionFormDialog(),
     );
-    nameController.dispose();
-    urlController.dispose();
     if (result == null || result.name.isEmpty || result.url.isEmpty) return;
 
     final url = Uri.tryParse(result.url);
@@ -281,7 +249,11 @@ class _ShellPageState extends State<ShellPage> {
       );
       await _profileRepository.save(nextState);
       if (!mounted) return;
-      setState(() => _profileState = nextState);
+      setState(() {
+        _profileState = nextState;
+        _selectedOutbounds.clear();
+        _outboundDelays.clear();
+      });
     } on SubscriptionException catch (error) {
       _showProfileMessage(error.message);
     }
@@ -375,6 +347,8 @@ class _ShellPageState extends State<ShellPage> {
       if (wasActive) {
         _lastDelay = null;
         _delayMessage = null;
+        _selectedOutbounds.clear();
+        _outboundDelays.clear();
       }
     });
     if (!wasActive || !_isConnected) return;
@@ -419,6 +393,43 @@ class _ShellPageState extends State<ShellPage> {
     }
   }
 
+  Future<void> _runOutboundDelayTest(String outbound) async {
+    if (!_isConnected || _testingOutbounds.contains(outbound)) return;
+    setState(() => _testingOutbounds.add(outbound));
+    try {
+      final delay = await _coreController.delayTest(outbound);
+      if (mounted) setState(() => _outboundDelays[outbound] = delay);
+    } on PlatformException {
+      _showProfileMessage('节点测速失败');
+    } on MissingPluginException {
+      _showProfileMessage('当前平台不支持测速');
+    } finally {
+      if (mounted) setState(() => _testingOutbounds.remove(outbound));
+    }
+  }
+
+  Future<void> _selectOutbound(ClashProxyGroup group, String outbound) async {
+    if (!_isConnected || !group.isSelectable || _testingOutbounds.contains(group.name)) {
+      return;
+    }
+    setState(() => _testingOutbounds.add(group.name));
+    try {
+      final selected = await _coreController.selectOutbound(group.name, outbound);
+      if (!mounted) return;
+      if (selected) {
+        setState(() => _selectedOutbounds[group.name] = outbound);
+      } else {
+        _showProfileMessage('未能切换到 $outbound');
+      }
+    } on PlatformException {
+      _showProfileMessage('节点切换失败');
+    } on MissingPluginException {
+      _showProfileMessage('当前平台不支持节点切换');
+    } finally {
+      if (mounted) setState(() => _testingOutbounds.remove(group.name));
+    }
+  }
+
   @override
   void dispose() {
     _trafficTimer?.cancel();
@@ -433,12 +444,22 @@ class _ShellPageState extends State<ShellPage> {
         errorMessage: _coreError,
         traffic: _traffic,
         activeProfileName: _profileState.activeProfile.name,
+        coreVersion: _coreVersion,
         delayTestOutbound: _delayTestOutbound,
         delay: _lastDelay,
         isDelayTesting: _isDelayTesting,
         delayMessage: _delayMessage,
         onToggleConnection: _toggleCore,
         onDelayTest: _runDelayTest,
+      ),
+      ProxyPage(
+        groups: _proxyGroups,
+        isConnected: _isConnected,
+        selectedOutbounds: _selectedOutbounds,
+        outboundDelays: _outboundDelays,
+        testingOutbounds: _testingOutbounds,
+        onDelayTest: _runOutboundDelayTest,
+        onSelectOutbound: _selectOutbound,
       ),
       ProfilesPage(
         profiles: _profileState.profiles,
@@ -479,6 +500,11 @@ class _ShellPageState extends State<ShellPage> {
                       icon: Icon(Icons.dashboard_outlined),
                       selectedIcon: Icon(Icons.dashboard),
                       label: '概览',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.route_outlined),
+                      selectedIcon: Icon(Icons.route),
+                      label: '代理',
                     ),
                     NavigationDestination(
                       icon: Icon(Icons.layers_outlined),
@@ -527,6 +553,11 @@ class _NavigationRail extends StatelessWidget {
                   label: Text('概览'),
                 ),
                 NavigationRailDestination(
+                  icon: Icon(Icons.route_outlined),
+                  selectedIcon: Icon(Icons.route),
+                  label: Text('代理'),
+                ),
+                NavigationRailDestination(
                   icon: Icon(Icons.layers_outlined),
                   selectedIcon: Icon(Icons.layers),
                   label: Text('配置'),
@@ -572,6 +603,7 @@ class HomePage extends StatelessWidget {
     required this.errorMessage,
     required this.traffic,
     required this.activeProfileName,
+    required this.coreVersion,
     required this.delayTestOutbound,
     required this.delay,
     required this.isDelayTesting,
@@ -585,6 +617,7 @@ class HomePage extends StatelessWidget {
   final String? errorMessage;
   final TrafficSnapshot traffic;
   final String activeProfileName;
+  final String coreVersion;
   final String? delayTestOutbound;
   final int? delay;
   final bool isDelayTesting;
@@ -631,11 +664,11 @@ class HomePage extends StatelessWidget {
                     ? null
                     : onDelayTest,
               ),
-              const _StatusRow(
+              _StatusRow(
                 icon: Icons.shield_outlined,
                 title: '内核服务',
-                value: 'Meta · v1.19.12',
-                accent: Color(0xFF63C7D8),
+                value: 'sing-box · $coreVersion',
+                accent: const Color(0xFF63C7D8),
               ),
             ]),
           ),
@@ -761,6 +794,224 @@ class _Metric extends StatelessWidget {
   }
 }
 
+class ProxyPage extends StatelessWidget {
+  const ProxyPage({
+    required this.groups,
+    required this.isConnected,
+    required this.selectedOutbounds,
+    required this.outboundDelays,
+    required this.testingOutbounds,
+    required this.onDelayTest,
+    required this.onSelectOutbound,
+    super.key,
+  });
+
+  final List<ClashProxyGroup> groups;
+  final bool isConnected;
+  final Map<String, String> selectedOutbounds;
+  final Map<String, int?> outboundDelays;
+  final Set<String> testingOutbounds;
+  final Future<void> Function(String outbound) onDelayTest;
+  final Future<void> Function(ClashProxyGroup group, String outbound)
+  onSelectOutbound;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(24, 28, 24, 48),
+      children: [
+        const _PageHeader(
+          eyebrow: 'PROXY GROUPS',
+          title: '代理',
+          subtitle: '测速节点并为策略组选择出站。',
+        ),
+        const SizedBox(height: 20),
+        if (!isConnected) const _ProxyConnectionHint(),
+        if (!isConnected) const SizedBox(height: 18),
+        if (groups.isEmpty)
+          const _ProxyEmptyState()
+        else
+          ...groups.map(
+            (group) => Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: _ProxyGroupCard(
+                group: group,
+                isConnected: isConnected,
+                selectedOutbound:
+                    selectedOutbounds[group.name] ?? group.selectedProxy,
+                outboundDelays: outboundDelays,
+                testingOutbounds: testingOutbounds,
+                onDelayTest: onDelayTest,
+                onSelectOutbound: onSelectOutbound,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _ProxyConnectionHint extends StatelessWidget {
+  const _ProxyConnectionHint();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF22242A),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFF343741)),
+      ),
+      child: const Row(
+        children: [
+          Icon(Icons.info_outline, color: Color(0xFFF0A35B)),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '启动服务后可测速并切换节点。',
+              style: TextStyle(color: Color(0xFFB7BBC5)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProxyEmptyState extends StatelessWidget {
+  const _ProxyEmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1C21),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFF292C33)),
+      ),
+      child: const Column(
+        children: [
+          Icon(Icons.route_outlined, size: 30, color: Color(0xFF777C86)),
+          SizedBox(height: 12),
+          Text('当前配置没有可用的策略组'),
+          SizedBox(height: 4),
+          Text('请在配置中导入包含 proxy-groups 的 Clash YAML。',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Color(0xFF898E98))),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProxyGroupCard extends StatelessWidget {
+  const _ProxyGroupCard({
+    required this.group,
+    required this.isConnected,
+    required this.selectedOutbound,
+    required this.outboundDelays,
+    required this.testingOutbounds,
+    required this.onDelayTest,
+    required this.onSelectOutbound,
+  });
+
+  final ClashProxyGroup group;
+  final bool isConnected;
+  final String selectedOutbound;
+  final Map<String, int?> outboundDelays;
+  final Set<String> testingOutbounds;
+  final Future<void> Function(String outbound) onDelayTest;
+  final Future<void> Function(ClashProxyGroup group, String outbound)
+  onSelectOutbound;
+
+  @override
+  Widget build(BuildContext context) {
+    final isGroupSwitching = testingOutbounds.contains(group.name);
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1C21),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFF292C33)),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+            child: Row(
+              children: [
+                const Icon(Icons.account_tree_outlined,
+                    color: Color(0xFF63C7D8)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(group.name,
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 3),
+                      Text(
+                        group.isSelectable ? '手动选择 · ${group.type}' : '自动选择 · ${group.type}',
+                        style: const TextStyle(
+                            color: Color(0xFF898E98), fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+                if (isGroupSwitching)
+                  const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: Color(0xFF292C33)),
+          ...group.proxies.map((outbound) {
+            final isSelected = outbound == selectedOutbound;
+            final isTesting = testingOutbounds.contains(outbound);
+            final delay = outboundDelays[outbound];
+            return ListTile(
+              dense: true,
+              contentPadding: const EdgeInsets.only(left: 16, right: 6),
+              enabled: isConnected && !isGroupSwitching,
+              leading: Icon(
+                isSelected ? Icons.check_circle : Icons.circle_outlined,
+                color: isSelected
+                    ? const Color(0xFFB7F36B)
+                    : const Color(0xFF777C86),
+              ),
+              title: Text(outbound, maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: isTesting
+                  ? const Text('正在测速')
+                  : Text(delay == null ? '未测速' : '$delay ms'),
+              onTap: !group.isSelectable || !isConnected || isGroupSwitching
+                  ? null
+                  : () => onSelectOutbound(group, outbound),
+              trailing: IconButton(
+                tooltip: '测速',
+                onPressed: !isConnected || isTesting || isGroupSwitching
+                    ? null
+                    : () => onDelayTest(outbound),
+                icon: isTesting
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.speed_outlined),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+}
+
 class ProfilesPage extends StatelessWidget {
   const ProfilesPage({
     required this.profiles,
@@ -863,11 +1114,114 @@ class _ProfileDraft {
   final String content;
 }
 
+class _ProfileFormDialog extends StatefulWidget {
+  const _ProfileFormDialog();
+
+  @override
+  State<_ProfileFormDialog> createState() => _ProfileFormDialogState();
+}
+
+class _ProfileFormDialogState extends State<_ProfileFormDialog> {
+  final _nameController = TextEditingController();
+  final _contentController = TextEditingController(text: defaultProfileContent);
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _contentController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('添加本地配置'),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: _nameController, decoration: const InputDecoration(labelText: '名称')),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _contentController,
+              decoration: const InputDecoration(labelText: 'Clash YAML'),
+              minLines: 6,
+              maxLines: 10,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+        FilledButton(
+          onPressed: () => Navigator.pop(
+            context,
+            _ProfileDraft(_nameController.text.trim(), _contentController.text),
+          ),
+          child: const Text('保存'),
+        ),
+      ],
+    );
+  }
+}
+
 class _SubscriptionDraft {
   const _SubscriptionDraft(this.name, this.url);
 
   final String name;
   final String url;
+}
+
+class _SubscriptionFormDialog extends StatefulWidget {
+  const _SubscriptionFormDialog();
+
+  @override
+  State<_SubscriptionFormDialog> createState() => _SubscriptionFormDialogState();
+}
+
+class _SubscriptionFormDialogState extends State<_SubscriptionFormDialog> {
+  final _nameController = TextEditingController();
+  final _urlController = TextEditingController();
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _urlController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('导入订阅'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: _nameController, decoration: const InputDecoration(labelText: '名称')),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _urlController,
+              decoration: const InputDecoration(labelText: '订阅地址'),
+              keyboardType: TextInputType.url,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+        FilledButton(
+          onPressed: () => Navigator.pop(
+            context,
+            _SubscriptionDraft(_nameController.text.trim(), _urlController.text.trim()),
+          ),
+          child: const Text('导入'),
+        ),
+      ],
+    );
+  }
 }
 
 class SettingsPage extends StatelessWidget {

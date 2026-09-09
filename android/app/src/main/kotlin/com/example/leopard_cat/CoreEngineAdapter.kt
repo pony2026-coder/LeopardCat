@@ -29,6 +29,7 @@ interface CoreEngineAdapter {
     fun stop(): EngineResult
     fun lastError(): String?
     fun delayTest(outbound: String): Int?
+    fun selectOutbound(group: String, outbound: String): Boolean
 }
 
 enum class EngineResult {
@@ -155,6 +156,17 @@ class LibboxEngineAdapter(
                     pendingDelayTests.remove(outbound)
                 }
             }
+        }
+    }
+
+    override fun selectOutbound(group: String, outbound: String): Boolean {
+        if (group.isBlank() || outbound.isBlank() || !telemetryConnected) return false
+        return try {
+            commandClient.selectOutbound(group, outbound)
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "failed to select $outbound for $group", t)
+            false
         }
     }
 

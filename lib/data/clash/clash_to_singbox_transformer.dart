@@ -5,17 +5,9 @@ import 'package:yaml/yaml.dart';
 class FragmentOptions {
   const FragmentOptions({
     this.enabled = true,
-    this.proxySize = '10-35',
-    this.proxySleep = '10-25',
-    this.directSize = '15-40',
-    this.directSleep = '10-20',
   });
 
   final bool enabled;
-  final String proxySize;
-  final String proxySleep;
-  final String directSize;
-  final String directSleep;
 }
 
 class ClashToSingboxTransformer {
@@ -36,16 +28,13 @@ class ClashToSingboxTransformer {
     final config = _map(source);
     final proxies = _list(config['proxies']);
     final proxyGroups = _list(config['proxy-groups']);
+    final geoipCountries = _geoipCountries(config['rules']);
     final outbounds = <Map<String, dynamic>>[
       ...proxies.map(_proxyToOutbound),
       ...proxyGroups.map(_groupToOutbound),
       {'type': 'direct', 'tag': 'DIRECT'},
       {'type': 'block', 'tag': 'REJECT'},
     ];
-
-    if (fragment.enabled) {
-      outbounds.add(_fragmentDirectOutbound());
-    }
 
     return {
       'log': {'level': 'info', 'timestamp': true},
@@ -72,6 +61,7 @@ class ClashToSingboxTransformer {
       'route': {
         'auto_detect_interface': true,
         'final': _finalOutbound(config, proxyGroups),
+        if (geoipCountries.isNotEmpty) 'rule_set': _geoipRuleSets(geoipCountries),
         'rules': [
           {'action': 'sniff'},
           ..._rulesToSingbox(config['rules']),
@@ -122,11 +112,7 @@ class ClashToSingboxTransformer {
         'insecure': _bool(proxy['skip-cert-verify']),
       };
       if (fragment.enabled) {
-        tls['fragment'] = {
-          'enabled': true,
-          'size': fragment.proxySize,
-          'sleep': fragment.proxySleep,
-        };
+        tls['fragment'] = true;
       }
       final realityOptions = _map(proxy['reality-opts']);
       if (realityOptions.isNotEmpty) {
@@ -194,21 +180,6 @@ class ClashToSingboxTransformer {
     return {'type': 'selector', 'tag': tag, 'outbounds': tags};
   }
 
-  Map<String, dynamic> _fragmentDirectOutbound() {
-    return {
-      'type': 'direct',
-      'tag': 'DIRECT-FRAGMENT',
-      'tls': {
-        'enabled': true,
-        'fragment': {
-          'enabled': true,
-          'size': fragment.directSize,
-          'sleep': fragment.directSleep,
-        },
-      },
-    };
-  }
-
   List<Map<String, dynamic>> _rulesToSingbox(Object? value) {
     final rules = <Map<String, dynamic>>[];
     for (final entry in _list(value)) {
@@ -229,7 +200,12 @@ class ClashToSingboxTransformer {
         case 'IP-CIDR6':
           rule['ip_cidr'] = [fields[1]];
         case 'GEOIP':
-          rule['rule_set'] = 'geoip-${fields[1].toLowerCase()}';
+          final country = fields[1].toLowerCase();
+          if (country == 'lan' || country == 'private') {
+            rule['ip_is_private'] = true;
+          } else {
+            rule['rule_set'] = 'geoip-$country';
+          }
         case 'MATCH':
           rule['outbound'] = target;
         default:
@@ -239,6 +215,26 @@ class ClashToSingboxTransformer {
       rules.add(rule);
     }
     return rules;
+  }
+
+  Set<String> _geoipCountries(Object? value) {
+    return {
+      for (final entry in _list(value))
+        if (_stringList(entry) case final fields when fields.length >= 2 && fields.first.toUpperCase() == 'GEOIP')
+          if (fields[1].toLowerCase() case final country when country != 'lan' && country != 'private') country,
+    };
+  }
+
+  List<Map<String, dynamic>> _geoipRuleSets(Set<String> countries) {
+    return [
+      for (final country in countries)
+        {
+          'type': 'remote',
+          'tag': 'geoip-$country',
+          'format': 'binary',
+          'url': 'https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-$country.srs',
+        },
+    ];
   }
 
   String _finalOutbound(Map<String, dynamic> config, List<Object?> groups) {

@@ -20,6 +20,8 @@ void main() {
             'downlink_bytes': 512,
           },
         'delayTest' => 86,
+        'selectOutbound' => true,
+        'coreVersion' => '1.14.0',
         _ => 'stopped',
       };
     });
@@ -49,6 +51,21 @@ void main() {
     expect(traffic.downlinkBytes, 512);
     expect(delay, 86);
     expect(calls.last.arguments, {'outbound': 'Proxy'});
+  });
+
+  test('reads the native sing-box version', () async {
+    final controller = AndroidCoreController(channel: channel);
+
+    expect(await controller.coreVersion(), '1.14.0');
+    expect(calls.single.method, 'coreVersion');
+  });
+
+  test('selects an outbound in a proxy group', () async {
+    final controller = AndroidCoreController(channel: channel);
+
+    expect(await controller.selectOutbound('Global', 'Tokyo'), isTrue);
+    expect(calls.single.method, 'selectOutbound');
+    expect(calls.single.arguments, {'group': 'Global', 'outbound': 'Tokyo'});
   });
 
   test('decodes native status errors', () async {
