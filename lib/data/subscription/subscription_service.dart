@@ -18,29 +18,75 @@ class SubscriptionService {
 
   Future<ProxyProfile> importSubscription(
       {required String name, required Uri url}) async {
-    final content = await _fetchValidatedContent(url);
+    final resolved = await _fetchValidatedContent(url);
     return ProxyProfile(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       name: name,
-      content: content,
+      content: resolved.content,
       updatedAt: DateTime.now(),
       subscriptionUrl: url.toString(),
+      sourceContent: resolved.sourceContent,
+      providerFiles: resolved.providerFiles,
     );
   }
 
   Future<ProxyProfile> refresh(ProxyProfile profile) async {
     final url = profile.subscriptionUrl;
     if (url == null) throw const SubscriptionException('当前配置不是订阅配置');
-    final content = await _fetchValidatedContent(Uri.parse(url));
-    return profile.copyWith(content: content, updatedAt: DateTime.now());
+    final resolved = await _fetchValidatedContent(Uri.parse(url));
+    return profile.copyWith(
+      content: resolved.content,
+      updatedAt: DateTime.now(),
+      sourceContent: resolved.sourceContent,
+      providerFiles: resolved.providerFiles,
+    );
   }
 
-  Future<String> _fetchValidatedContent(Uri url) async {
+  Future<ProxyProfile> refreshProvider(
+    ProxyProfile profile,
+    ProviderFile providerFile,
+  ) async {
+    final sourceContent = profile.sourceContent;
+    final subscriptionUrl = profile.subscriptionUrl;
+    if (sourceContent == null || subscriptionUrl == null) {
+      throw const SubscriptionException('当前配置没有可刷新的 provider 源文件');
+    }
+    try {
+      final refreshedContent = _decodeSubscriptionContent(
+        await _client.fetch(Uri.parse(providerFile.url)),
+      );
+      final refreshedFiles = [
+        for (final file in profile.providerFiles)
+          if (_providerFileKey(file) == _providerFileKey(providerFile))
+            file.copyWith(
+              content: refreshedContent,
+              updatedAt: DateTime.now(),
+            )
+          else
+            file,
+      ];
+      final resolved = await _expandProviders(
+        sourceContent,
+        Uri.parse(subscriptionUrl),
+        cachedProviderFiles: refreshedFiles,
+      );
+      _transformer.transformYamlToJson(resolved.content);
+      return profile.copyWith(
+        content: resolved.content,
+        updatedAt: DateTime.now(),
+        providerFiles: resolved.providerFiles,
+      );
+    } on FormatException {
+      throw const SubscriptionException('provider 内容不是有效的 Clash YAML');
+    }
+  }
+
+  Future<_ResolvedSubscription> _fetchValidatedContent(Uri url) async {
     try {
       final downloaded = _decodeSubscriptionContent(await _client.fetch(url));
-      final content = await _expandProviders(downloaded, url);
-      _transformer.transformYamlToJson(content);
-      return content;
+      final resolved = await _expandProviders(downloaded, url);
+      _transformer.transformYamlToJson(resolved.content);
+      return resolved;
     } on FormatException {
       throw const SubscriptionException('订阅内容不是有效的 Clash YAML');
     }
@@ -57,15 +103,28 @@ class SubscriptionService {
     }
   }
 
-  Future<String> _expandProviders(String content, Uri subscriptionUrl) async {
+  Future<_ResolvedSubscription> _expandProviders(
+    String content,
+    Uri subscriptionUrl, {
+    List<ProviderFile>? cachedProviderFiles,
+  }) async {
     final document = loadYaml(content);
-    if (document is! YamlMap) return content;
+    if (document is! YamlMap) {
+      return _ResolvedSubscription(content: content, sourceContent: content);
+    }
     final config = _plainMap(document);
     final proxyProviders = _plainMap(config['proxy-providers']);
     final ruleProviders = _plainMap(config['rule-providers']);
-    if (proxyProviders.isEmpty && ruleProviders.isEmpty) return content;
+    if (proxyProviders.isEmpty && ruleProviders.isEmpty) {
+      return _ResolvedSubscription(content: content, sourceContent: content);
+    }
     final proxies = _plainList(config['proxies']);
     final providerNodes = <String, List<String>>{};
+    final providerFiles = <ProviderFile>[];
+    final cachedFiles = {
+      for (final file in cachedProviderFiles ?? const <ProviderFile>[])
+        _providerFileKey(file): file,
+    };
 
     for (final entry in proxyProviders.entries) {
       final provider = _plainMap(entry.value);
@@ -74,7 +133,9 @@ class SubscriptionService {
       }
       final providerUrl =
           _providerUrl(subscriptionUrl, provider, '代理 provider');
-      final providerContent =
+      final cachedFile =
+          cachedFiles[_providerKey(ProviderFileKind.proxy, entry.key)];
+      final providerContent = cachedFile?.content ??
           _decodeSubscriptionContent(await _client.fetch(providerUrl));
       final providerDocument = loadYaml(providerContent);
       final nodes = _plainList(
@@ -84,6 +145,13 @@ class SubscriptionService {
         throw SubscriptionException('代理 provider ${entry.key} 没有可用节点');
       }
       proxies.addAll(nodes);
+      providerFiles.add(ProviderFile(
+        name: entry.key,
+        kind: ProviderFileKind.proxy,
+        url: providerUrl.toString(),
+        content: providerContent,
+        updatedAt: cachedFile?.updatedAt ?? DateTime.now(),
+      ));
       providerNodes[entry.key] = [
         for (final node in nodes)
           if (_plainMap(node)['name'] case final name?) '$name',
@@ -106,6 +174,33 @@ class SubscriptionService {
     final rules = _plainList(config['rules']);
     final expandedRules = <Object?>[];
     final ruleProviderPayloads = <String, List<Object?>>{};
+    for (final entry in ruleProviders.entries) {
+      final provider = _plainMap(entry.value);
+      if (_providerType(provider) != 'http') {
+        throw SubscriptionException('不支持的规则 provider：${entry.key}');
+      }
+      final providerUrl =
+          _providerUrl(subscriptionUrl, provider, '规则 provider');
+      final cachedFile =
+          cachedFiles[_providerKey(ProviderFileKind.rule, entry.key)];
+      final providerContent = cachedFile?.content ??
+          _decodeSubscriptionContent(await _client.fetch(providerUrl));
+      final providerDocument = loadYaml(providerContent);
+      final payload = _plainList(
+        providerDocument is YamlMap ? providerDocument['payload'] : null,
+      );
+      if (payload.isEmpty) {
+        throw SubscriptionException('规则 provider ${entry.key} 没有可用规则');
+      }
+      ruleProviderPayloads[entry.key] = payload;
+      providerFiles.add(ProviderFile(
+        name: entry.key,
+        kind: ProviderFileKind.rule,
+        url: providerUrl.toString(),
+        content: providerContent,
+        updatedAt: cachedFile?.updatedAt ?? DateTime.now(),
+      ));
+    }
     for (final ruleValue in rules) {
       final fields =
           '$ruleValue'.split(',').map((field) => field.trim()).toList();
@@ -114,12 +209,7 @@ class SubscriptionService {
         continue;
       }
       final provider = _plainMap(ruleProviders[fields[1]]);
-      if (_providerType(provider) != 'http') {
-        throw SubscriptionException('不支持的规则 provider：${fields[1]}');
-      }
-      final payload = ruleProviderPayloads[fields[1]] ??
-          await _downloadRuleProvider(subscriptionUrl, fields[1], provider);
-      ruleProviderPayloads[fields[1]] = payload;
+      final payload = ruleProviderPayloads[fields[1]] ?? const <Object?>[];
       if (payload.isEmpty) {
         throw SubscriptionException('规则 provider ${fields[1]} 没有可用规则');
       }
@@ -134,26 +224,18 @@ class SubscriptionService {
     config['rules'] = expandedRules;
     config.remove('proxy-providers');
     config.remove('rule-providers');
-    return jsonEncode(config);
+    return _ResolvedSubscription(
+      content: jsonEncode(config),
+      sourceContent: content,
+      providerFiles: providerFiles,
+    );
   }
 
-  Future<List<Object?>> _downloadRuleProvider(
-    Uri subscriptionUrl,
-    String providerName,
-    Map<String, dynamic> provider,
-  ) async {
-    final providerUrl = _providerUrl(subscriptionUrl, provider, '规则 provider');
-    final providerContent =
-        _decodeSubscriptionContent(await _client.fetch(providerUrl));
-    final providerDocument = loadYaml(providerContent);
-    final payload = _plainList(
-      providerDocument is YamlMap ? providerDocument['payload'] : null,
-    );
-    if (payload.isEmpty) {
-      throw SubscriptionException('规则 provider $providerName 没有可用规则');
-    }
-    return payload;
-  }
+  String _providerFileKey(ProviderFile file) =>
+      _providerKey(file.kind, file.name);
+
+  String _providerKey(ProviderFileKind kind, String name) =>
+      '${kind.name}:$name';
 
   List<String> _providerRuleFields(
     Map<String, dynamic> provider,
@@ -209,4 +291,16 @@ class SubscriptionService {
     if (value is Iterable && value is! String) return _plainList(value);
     return value;
   }
+}
+
+class _ResolvedSubscription {
+  const _ResolvedSubscription({
+    required this.content,
+    required this.sourceContent,
+    this.providerFiles = const [],
+  });
+
+  final String content;
+  final String sourceContent;
+  final List<ProviderFile> providerFiles;
 }

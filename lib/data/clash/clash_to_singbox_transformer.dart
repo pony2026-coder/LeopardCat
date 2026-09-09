@@ -10,6 +10,27 @@ class FragmentOptions {
   final bool enabled;
 }
 
+enum StaticResourceKind { geoip, geosite }
+
+class StaticResource {
+  const StaticResource({
+    required this.kind,
+    required this.tag,
+    required this.url,
+  });
+
+  final StaticResourceKind kind;
+  final String tag;
+  final String url;
+
+  Map<String, dynamic> toRuleSet() => {
+        'type': 'remote',
+        'tag': tag,
+        'format': 'binary',
+        'url': url,
+      };
+}
+
 class ClashToSingboxTransformer {
   const ClashToSingboxTransformer({this.fragment = const FragmentOptions()});
 
@@ -24,11 +45,16 @@ class ClashToSingboxTransformer {
     return const JsonEncoder.withIndent('  ').convert(transformYaml(source));
   }
 
+  List<StaticResource> staticResources(String source) {
+    final document = loadYaml(source);
+    return _staticResources(_map(document)['rules']);
+  }
+
   Map<String, dynamic> transform(Object? source) {
     final config = _map(source);
     final proxies = _list(config['proxies']);
     final proxyGroups = _list(config['proxy-groups']);
-    final geoipCountries = _geoipCountries(config['rules']);
+    final resources = _staticResources(config['rules']);
     final outbounds = <Map<String, dynamic>>[
       ...proxies.map(_proxyToOutbound),
       ...proxyGroups.map(_groupToOutbound),
@@ -61,11 +87,18 @@ class ClashToSingboxTransformer {
       'route': {
         'auto_detect_interface': true,
         'final': _finalOutbound(config, proxyGroups),
-        if (geoipCountries.isNotEmpty) 'rule_set': _geoipRuleSets(geoipCountries),
+        if (resources.isNotEmpty)
+          'rule_set': resources.map((resource) => resource.toRuleSet()).toList(),
         'rules': [
           {'action': 'sniff'},
           ..._rulesToSingbox(config['rules']),
         ],
+      },
+      'experimental': {
+        'cache_file': {
+          'enabled': true,
+          'cache_id': 'leopard-cat-global',
+        },
       },
     };
   }
@@ -206,6 +239,8 @@ class ClashToSingboxTransformer {
           } else {
             rule['rule_set'] = 'geoip-$country';
           }
+        case 'GEOSITE':
+          rule['rule_set'] = 'geosite-${fields[1].toLowerCase()}';
         case 'MATCH':
           rule['outbound'] = target;
         default:
@@ -217,24 +252,36 @@ class ClashToSingboxTransformer {
     return rules;
   }
 
-  Set<String> _geoipCountries(Object? value) {
-    return {
-      for (final entry in _list(value))
-        if (_stringList(entry) case final fields when fields.length >= 2 && fields.first.toUpperCase() == 'GEOIP')
-          if (fields[1].toLowerCase() case final country when country != 'lan' && country != 'private') country,
-    };
-  }
-
-  List<Map<String, dynamic>> _geoipRuleSets(Set<String> countries) {
-    return [
-      for (final country in countries)
-        {
-          'type': 'remote',
-          'tag': 'geoip-$country',
-          'format': 'binary',
-          'url': 'https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-$country.srs',
-        },
-    ];
+  List<StaticResource> _staticResources(Object? value) {
+    final resources = <String, StaticResource>{};
+    for (final entry in _list(value)) {
+      final fields = _stringList(entry);
+      if (fields.length < 2) continue;
+      final name = fields[1].toLowerCase();
+      switch (fields.first.toUpperCase()) {
+        case 'GEOIP' when name != 'lan' && name != 'private':
+          final tag = 'geoip-$name';
+          resources.putIfAbsent(
+            tag,
+            () => StaticResource(
+              kind: StaticResourceKind.geoip,
+              tag: tag,
+              url: 'https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/$tag.srs',
+            ),
+          );
+        case 'GEOSITE':
+          final tag = 'geosite-$name';
+          resources.putIfAbsent(
+            tag,
+            () => StaticResource(
+              kind: StaticResourceKind.geosite,
+              tag: tag,
+              url: 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/$tag.srs',
+            ),
+          );
+      }
+    }
+    return resources.values.toList(growable: false);
   }
 
   String _finalOutbound(Map<String, dynamic> config, List<Object?> groups) {

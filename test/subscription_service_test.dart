@@ -126,6 +126,12 @@ payload:
       Uri.parse('https://example.com/providers/airport.yaml'),
       Uri.parse('https://example.com/rules/custom.yaml'),
     ]);
+    expect(profile.providerFiles, hasLength(2));
+    expect(profile.providerFiles.first.name, 'airport');
+    expect(profile.providerFiles.first.kind, ProviderFileKind.proxy);
+    expect(profile.providerFiles.first.content, contains('Provider Node'));
+    expect(profile.providerFiles.last.name, 'custom');
+    expect(profile.providerFiles.last.kind, ProviderFileKind.rule);
     expect(outbounds.any((outbound) => outbound['tag'] == 'Provider Node'),
         isTrue);
     expect(
@@ -142,6 +148,60 @@ payload:
       'ip_cidr': ['10.0.0.0/8'],
       'outbound': 'Proxy'
     });
+  });
+
+  test('refreshes one provider file without downloading the others', () async {
+    final client = _RoutingSubscriptionClient({
+      'https://example.com/providers/airport.yaml': '''
+proxies:
+  - name: Refreshed Node
+    type: ss
+    server: refreshed.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+''',
+    });
+    final service = SubscriptionService(
+      client: client,
+      transformer: const ClashToSingboxTransformer(),
+    );
+    final profile = ProxyProfile(
+      id: 'provider-profile',
+      name: 'Provider 订阅',
+      content: validContent,
+      sourceContent: '''
+proxy-providers:
+  airport:
+    type: http
+    url: ./providers/airport.yaml
+proxy-groups:
+  - name: Proxy
+    type: select
+    use: [airport]
+rules: []
+''',
+      providerFiles: [
+        ProviderFile(
+          name: 'airport',
+          kind: ProviderFileKind.proxy,
+          url: 'https://example.com/providers/airport.yaml',
+          content: 'proxies: []',
+          updatedAt: DateTime.utc(2026),
+        ),
+      ],
+      updatedAt: DateTime.utc(2026),
+      subscriptionUrl: 'https://example.com/sub.yaml',
+    );
+
+    final refreshed =
+        await service.refreshProvider(profile, profile.providerFiles.single);
+
+    expect(client.requestedUris, [
+      Uri.parse('https://example.com/providers/airport.yaml'),
+    ]);
+    expect(refreshed.providerFiles.single.content, contains('Refreshed Node'));
+    expect(refreshed.content, contains('Refreshed Node'));
   });
 
   test('rejects unsupported local providers', () async {

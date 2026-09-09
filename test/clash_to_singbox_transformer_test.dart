@@ -25,7 +25,10 @@ rules:
   - DOMAIN-SUFFIX,apple.com,DIRECT
   - IP-CIDR,1.1.1.1/32,REJECT,no-resolve
   - GEOIP,CN,DIRECT
+  - GEOIP,CN,Proxy
   - GEOIP,LAN,DIRECT
+  - GEOSITE,GOOGLE,Proxy
+  - GEOSITE,google,DIRECT
   - MATCH,Proxy
 ''';
 
@@ -55,8 +58,11 @@ rules:
     expect(rules[2]['domain_suffix'], ['.apple.com']);
     expect(rules[3]['ip_cidr'], ['1.1.1.1/32']);
     expect(rules[4]['rule_set'], 'geoip-cn');
-    expect(rules[5]['ip_is_private'], isTrue);
-    expect(rules[6]['outbound'], 'Proxy');
+    expect(rules[5]['rule_set'], 'geoip-cn');
+    expect(rules[6]['ip_is_private'], isTrue);
+    expect(rules[7]['rule_set'], 'geosite-google');
+    expect(rules[8]['rule_set'], 'geosite-google');
+    expect(rules[9]['outbound'], 'Proxy');
     expect(ruleSets, [
       {
         'type': 'remote',
@@ -64,7 +70,28 @@ rules:
         'format': 'binary',
         'url': 'https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs',
       },
+      {
+        'type': 'remote',
+        'tag': 'geosite-google',
+        'format': 'binary',
+        'url': 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-google.srs',
+      },
     ]);
+    expect(config['experimental'], {
+      'cache_file': {'enabled': true, 'cache_id': 'leopard-cat-global'},
+    });
+  });
+
+  test('lists deduplicated global GEOIP and GEOSite resources', () {
+    final resources =
+        const ClashToSingboxTransformer().staticResources(source);
+
+    expect(resources.map((resource) => resource.tag), [
+      'geoip-cn',
+      'geosite-google',
+    ]);
+    expect(resources.first.kind, StaticResourceKind.geoip);
+    expect(resources.last.kind, StaticResourceKind.geosite);
   });
 
   test('produces valid JSON and sing-box v1.14 mobile defaults', () {

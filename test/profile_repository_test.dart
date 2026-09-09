@@ -11,7 +11,8 @@ void main() {
       content: 'proxies: []\nproxy-groups: []\nrules: []',
       updatedAt: DateTime.utc(2026, 9, 9),
     );
-    final state = ProfileState(profiles: [profile], activeProfileId: profile.id);
+    final state =
+        ProfileState(profiles: [profile], activeProfileId: profile.id);
 
     await repository.save(state);
     final loaded = await repository.load();
@@ -20,8 +21,45 @@ void main() {
     expect(loaded.activeProfile.content, profile.content);
   });
 
+  test('persists subscription source and provider files', () async {
+    final storage = _MemoryProfileStorage();
+    final repository = ProfileRepository(storage: storage);
+    final updatedAt = DateTime.utc(2026, 9, 10);
+    final profile = ProxyProfile(
+      id: 'providers',
+      name: 'Provider 订阅',
+      content: '{"proxies":[]}',
+      sourceContent: 'proxy-providers: {}',
+      providerFiles: [
+        ProviderFile(
+          name: 'airport',
+          kind: ProviderFileKind.proxy,
+          url: 'https://example.com/airport.yaml',
+          content: 'proxies: []',
+          updatedAt: updatedAt,
+        ),
+      ],
+      updatedAt: updatedAt,
+      subscriptionUrl: 'https://example.com/sub.yaml',
+    );
+
+    await repository.save(
+      ProfileState(profiles: [profile], activeProfileId: profile.id),
+    );
+    final loaded = await repository.load();
+
+    expect(loaded.activeProfile.sourceContent, profile.sourceContent);
+    expect(loaded.activeProfile.providerFiles.single.name, 'airport');
+    expect(
+      loaded.activeProfile.providerFiles.single.kind,
+      ProviderFileKind.proxy,
+    );
+    expect(loaded.activeProfile.providerFiles.single.content, 'proxies: []');
+  });
+
   test('uses the default profile when saved data is invalid', () async {
-    final repository = ProfileRepository(storage: _MemoryProfileStorage('not-json'));
+    final repository =
+        ProfileRepository(storage: _MemoryProfileStorage('not-json'));
 
     final state = await repository.load();
 
@@ -29,8 +67,10 @@ void main() {
     expect(state.activeProfile.id, 'default');
   });
 
-  test('uses the default profile when saved JSON has an invalid structure', () async {
-    final repository = ProfileRepository(storage: _MemoryProfileStorage('{"profiles":{}}'));
+  test('uses the default profile when saved JSON has an invalid structure',
+      () async {
+    final repository =
+        ProfileRepository(storage: _MemoryProfileStorage('{"profiles":{}}'));
 
     final state = await repository.load();
 
@@ -52,7 +92,8 @@ void main() {
       updatedAt: DateTime.utc(2026),
     );
 
-    final state = ProfileState(profiles: [first, second], activeProfileId: second.id);
+    final state =
+        ProfileState(profiles: [first, second], activeProfileId: second.id);
     final updated = state.removeProfile(second.id);
 
     expect(updated.profiles, [first]);
