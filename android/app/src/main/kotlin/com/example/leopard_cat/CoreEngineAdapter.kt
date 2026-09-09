@@ -1,5 +1,6 @@
 package com.example.leopard_cat
 
+import io.nekohasekai.libbox.Libbox
 import org.json.JSONObject
 
 interface CoreEngineAdapter {
@@ -17,6 +18,9 @@ enum class EngineResult {
 
 class LibboxEngineAdapter : CoreEngineAdapter {
     private var configJson: String? = null
+
+    val version: String
+        get() = Libbox.version()
 
     override fun start(configJson: String): EngineResult {
         if (!isValidSingboxConfig(configJson)) return EngineResult.INVALID_CONFIG
@@ -38,8 +42,12 @@ class LibboxEngineAdapter : CoreEngineAdapter {
     private fun isValidSingboxConfig(configJson: String): Boolean {
         return try {
             val config = JSONObject(configJson)
-            config.has("inbounds") && config.has("outbounds") && config.has("route")
-        } catch (_: Exception) {
+            if (!config.has("inbounds") || !config.has("outbounds") || !config.has("route")) {
+                return false
+            }
+            Libbox.checkConfig(configJson)
+            true
+        } catch (_: Throwable) {
             false
         }
     }

@@ -13,6 +13,7 @@
 - Android 宿主：`MethodChannel`、VPN 权限申请和 `VpnService` 生命周期占位
 - 配置转换：Clash YAML 转 sing-box JSON，支持节点、策略组、规则、TUN 和 TLS Fragment
 - 核心桥接：配置 JSON 已传入 Android service，支持 `start`、`reload`、`stop`、`status`、`queryTraffic`、`delayTest`
+- sing-box 核心：已接入 v1.14.0 多 ABI `libbox.aar`，使用官方 `Libbox.checkConfig()` 校验配置
 
 当前机器已生成 Android 原生目录并通过 Flutter 分析、测试和真机启动验证。
 
@@ -27,7 +28,19 @@ flutter test
 flutter run -d <android-device-id>
 ```
 
-当前仓库尚未放入 sing-box `libbox.aar`，因此 `LibboxEngineAdapter` 会校验并保存配置后返回 `unavailable`；流量查询返回零值，测速返回空值，不会伪造代理核心已运行。下一步是接入对应 ABI 的 `libbox.aar`，实现 TUN fd 和真实核心生命周期。
+项目包含官方 sing-box v1.14.0 多 ABI AAR，`LibboxEngineAdapter` 会调用
+`Libbox.checkConfig()` 校验配置；由于 TUN fd 和平台接口尚未完成，核心启动仍返回
+`unavailable`，流量查询返回零值，测速返回空值，不会伪造代理核心已运行。下一步是实现
+真实 TUN fd 和核心生命周期。AAR 的 SHA-256 为
+`31270a9f33111b699bd52e283802d991308348db58c931e5fff610c6f24b63a0`。
+该产物来自 [sing-box v1.14.0](https://github.com/SagerNet/sing-box/tree/v1.14.0)
+官方 `build_libbox` 和 `merge_aar` 流程，覆盖 `arm64-v8a`、`armeabi-v7a`、`x86_64`。
+
+重新构建 Go 内核 AAR：
+
+```bash
+./tool/build_libbox_android.sh
+```
 
 ## 配置转换
 
