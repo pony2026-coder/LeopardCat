@@ -5,6 +5,7 @@ import android.net.VpnService
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
+import android.os.Build
 
 class MainActivity : FlutterActivity() {
 	private val channelName = "leopard_cat/core"
@@ -46,8 +47,8 @@ class MainActivity : FlutterActivity() {
 		val serviceIntent = Intent(this, LeopardCatVpnService::class.java)
 		serviceIntent.action = LeopardCatVpnService.ACTION_START
 		serviceIntent.putExtra(LeopardCatVpnService.EXTRA_CONFIG_JSON, config)
-		startService(serviceIntent)
-		result.success("unavailable")
+		startVpnService(serviceIntent)
+		result.success("starting")
 	}
 
 	private fun reloadCore(config: String?, result: MethodChannel.Result) {
@@ -58,14 +59,14 @@ class MainActivity : FlutterActivity() {
 		val serviceIntent = Intent(this, LeopardCatVpnService::class.java)
 		serviceIntent.action = LeopardCatVpnService.ACTION_RELOAD
 		serviceIntent.putExtra(LeopardCatVpnService.EXTRA_CONFIG_JSON, config)
-		startService(serviceIntent)
+		startVpnService(serviceIntent)
 		result.success(currentStatus())
 	}
 
 	private fun stopCore(result: MethodChannel.Result) {
 		val serviceIntent = Intent(this, LeopardCatVpnService::class.java)
 		serviceIntent.action = LeopardCatVpnService.ACTION_STOP
-		startService(serviceIntent)
+		startVpnService(serviceIntent)
 		result.success("stopped")
 	}
 
@@ -85,11 +86,19 @@ class MainActivity : FlutterActivity() {
 				val serviceIntent = Intent(this, LeopardCatVpnService::class.java)
 				serviceIntent.action = LeopardCatVpnService.ACTION_START
 				serviceIntent.putExtra(LeopardCatVpnService.EXTRA_CONFIG_JSON, config)
-				startService(serviceIntent)
+				startVpnService(serviceIntent)
 			}
 			pendingConfig = null
 		}
 	}
 
 	private var pendingConfig: String? = null
+
+	private fun startVpnService(intent: Intent) {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+			startForegroundService(intent)
+		} else {
+			startService(intent)
+		}
+	}
 }

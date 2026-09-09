@@ -1,11 +1,47 @@
 package com.example.leopard_cat
 
 import android.content.Intent
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.os.Build
 import android.net.VpnService
 import android.os.IBinder
+import android.os.ParcelFileDescriptor
 
 class LeopardCatVpnService : VpnService() {
-    private val engine = LibboxEngineAdapter()
+    private lateinit var platform: AndroidPlatformInterface
+    private lateinit var engine: LibboxEngineAdapter
+    private var tunDescriptor: ParcelFileDescriptor? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        startForegroundServiceNotification()
+        platform = AndroidPlatformInterface(this) { descriptor -> tunDescriptor = descriptor }
+        engine = LibboxEngineAdapter(platform, filesDir.absolutePath)
+        engine.initialize()
+    }
+
+    private fun startForegroundServiceNotification() {
+        val channelId = "leopard_cat_vpn"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "LeopardCat VPN",
+                NotificationManager.IMPORTANCE_LOW,
+            )
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+        val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, channelId)
+        } else {
+            Notification.Builder(this)
+        }.setContentTitle("LeopardCat")
+            .setContentText("VPN service is running")
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .build()
+        startForeground(1001, notification)
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -34,7 +70,8 @@ class LeopardCatVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        engine.stop()
+        if (::engine.isInitialized) engine.stop()
+        tunDescriptor?.close()
         status = EngineResult.STOPPED
         super.onDestroy()
     }
