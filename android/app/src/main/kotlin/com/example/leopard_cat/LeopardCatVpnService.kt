@@ -8,6 +8,9 @@ import android.os.Build
 import android.net.VpnService
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
+import android.util.Log
+
+private const val TAG = "LeopardCatVpn"
 
 class LeopardCatVpnService : VpnService() {
     private lateinit var platform: AndroidPlatformInterface
@@ -16,13 +19,20 @@ class LeopardCatVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.i(TAG, "onCreate")
         startForegroundServiceNotification()
-        platform = AndroidPlatformInterface(this) { descriptor -> tunDescriptor = descriptor }
-        engine = LibboxEngineAdapter(platform, filesDir.absolutePath)
+        platform = AndroidPlatformInterface(this) { descriptor ->
+            Log.i(TAG, "TUN created, fd=${descriptor.fd}")
+            tunDescriptor = descriptor
+        }
+        engine = LibboxEngineAdapter(platform, filesDir.absolutePath) { message ->
+            Log.d(TAG, "sing-box: $message")
+        }
         engine.initialize()
     }
 
     private fun startForegroundServiceNotification() {
+        Log.i(TAG, "starting foreground notification")
         val channelId = "leopard_cat_vpn"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -44,24 +54,30 @@ class LeopardCatVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "onStartCommand: action=${intent?.action}")
         when (intent?.action) {
             ACTION_START -> {
                 val config = intent.getStringExtra(EXTRA_CONFIG_JSON)
                 status = if (config == null) {
+                    Log.e(TAG, "ACTION_START: missing config")
                     EngineResult.INVALID_CONFIG
                 } else {
                     engine.start(config)
                 }
+                Log.i(TAG, "ACTION_START -> status=$status")
             }
             ACTION_RELOAD -> {
                 val config = intent.getStringExtra(EXTRA_CONFIG_JSON)
                 status = if (config == null) {
+                    Log.e(TAG, "ACTION_RELOAD: missing config")
                     EngineResult.INVALID_CONFIG
                 } else {
                     engine.reload(config)
                 }
+                Log.i(TAG, "ACTION_RELOAD -> status=$status")
             }
             ACTION_STOP -> {
+                Log.i(TAG, "ACTION_STOP")
                 status = engine.stop()
                 stopSelf()
             }
@@ -70,6 +86,7 @@ class LeopardCatVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        Log.i(TAG, "onDestroy")
         if (::engine.isInitialized) engine.stop()
         tunDescriptor?.close()
         status = EngineResult.STOPPED

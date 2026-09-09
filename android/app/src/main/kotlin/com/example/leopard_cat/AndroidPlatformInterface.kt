@@ -2,6 +2,7 @@ package com.example.leopard_cat
 
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import io.nekohasekai.libbox.BridgeOptions
 import io.nekohasekai.libbox.BridgeSession
 import io.nekohasekai.libbox.ConnectionOwner
@@ -18,6 +19,8 @@ import io.nekohasekai.libbox.StringIterator
 import io.nekohasekai.libbox.TunOptions
 import io.nekohasekai.libbox.WIFIState
 
+private const val TAG = "LeopardCatTun"
+
 class AndroidPlatformInterface(
     private val vpnService: VpnService,
     private val onTunCreated: (ParcelFileDescriptor) -> Unit,
@@ -25,31 +28,40 @@ class AndroidPlatformInterface(
     private val localDnsTransport = AndroidLocalDnsTransport()
 
     override fun openTun(options: TunOptions): Int {
+        Log.i(TAG, "openTun: mtu=${options.mtu} autoRoute=${options.autoRoute}")
         check(VpnService.prepare(vpnService) == null) { "VPN permission is not granted" }
 
         val builder = vpnService.Builder().setSession("LeopardCat").setMtu(options.mtu)
         val addresses = options.inet4Address
         while (addresses.hasNext()) {
             val address = addresses.next()
+            Log.i(TAG, "openTun: inet4 ${address.address()}/${address.prefix()}")
             builder.addAddress(address.address(), address.prefix())
         }
         val addresses6 = options.inet6Address
         while (addresses6.hasNext()) {
             val address = addresses6.next()
+            Log.i(TAG, "openTun: inet6 ${address.address()}/${address.prefix()}")
             builder.addAddress(address.address(), address.prefix())
         }
 
         if (options.autoRoute) {
             val dns = options.dnsServerAddress
-            while (dns.hasNext()) builder.addDnsServer(dns.next())
+            while (dns.hasNext()) {
+                val dnsServer = dns.next()
+                Log.i(TAG, "openTun: dns server $dnsServer")
+                builder.addDnsServer(dnsServer)
+            }
 
             val routes = options.inet4RouteAddress
             if (routes.hasNext()) {
                 while (routes.hasNext()) {
                     val route = routes.next()
+                    Log.i(TAG, "openTun: inet4 route ${route.address()}/${route.prefix()}")
                     builder.addRoute(route.address(), route.prefix())
                 }
             } else {
+                Log.i(TAG, "openTun: no inet4 routes, add 0.0.0.0/0")
                 builder.addRoute("0.0.0.0", 0)
             }
 
@@ -57,17 +69,20 @@ class AndroidPlatformInterface(
             if (routes6.hasNext()) {
                 while (routes6.hasNext()) {
                     val route = routes6.next()
+                    Log.i(TAG, "openTun: inet6 route ${route.address()}/${route.prefix()}")
                     builder.addRoute(route.address(), route.prefix())
                 }
             }
         }
 
         val descriptor = builder.establish() ?: error("Unable to establish Android VPN")
+        Log.i(TAG, "openTun: established fd=${descriptor.fd}")
         onTunCreated(descriptor)
         return descriptor.fd
     }
 
     override fun autoDetectInterfaceControl(fd: Int) {
+        Log.i(TAG, "autoDetectInterfaceControl(fd=$fd)")
         vpnService.protect(fd)
     }
 

@@ -11,6 +11,44 @@ class MainActivity : FlutterActivity() {
 	private val channelName = "leopard_cat/core"
 	private val vpnPermissionRequestCode = 4101
 
+	override fun onCreate(savedInstanceState: android.os.Bundle?) {
+		super.onCreate(savedInstanceState)
+		handleAutoStart(intent)
+	}
+
+	override fun onNewIntent(intent: Intent) {
+		super.onNewIntent(intent)
+		handleAutoStart(intent)
+	}
+
+	// Debug-only entry: `adb shell am start -n .../.MainActivity --ez auto_start true --es auto_start_config_file /data/local/tmp/leopardcat_config.json`
+	private fun handleAutoStart(intent: Intent?) {
+		if (intent == null || !intent.getBooleanExtra("auto_start", false)) return
+		val config = intent.getStringExtra("auto_start_config")
+			?: readConfigFromFile(intent.getStringExtra("auto_start_config_file"))
+			?: return
+		android.util.Log.i("LeopardCat", "auto-start config length=${config.length}")
+		startCore(config, object : MethodChannel.Result {
+			override fun success(result: Any?) {
+				android.util.Log.i("LeopardCat", "auto-start result: $result")
+			}
+			override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+				android.util.Log.e("LeopardCat", "auto-start error: $errorCode $errorMessage")
+			}
+			override fun notImplemented() = Unit
+		})
+	}
+
+	private fun readConfigFromFile(path: String?): String? {
+		if (path == null) return null
+		return try {
+			java.io.File(path).readText()
+		} catch (t: Throwable) {
+			android.util.Log.e("LeopardCat", "failed to read config file: $t")
+			null
+		}
+	}
+
 	override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
 		super.configureFlutterEngine(flutterEngine)
 

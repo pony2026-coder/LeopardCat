@@ -49,21 +49,26 @@ rules:
     expect(group['type'], 'selector');
     expect(route['final'], 'Proxy');
     expect(group['outbounds'], ['Secure Node', 'DIRECT']);
-    expect(rules[0], {'domain': ['google.com'], 'outbound': 'Proxy'});
-    expect(rules[1]['domain_suffix'], ['.apple.com']);
-    expect(rules[2]['ip_cidr'], ['1.1.1.1/32']);
-    expect(rules[3]['rule_set'], 'geoip-cn');
-    expect(rules[4]['outbound'], 'Proxy');
+    expect(rules[0]['action'], 'sniff');
+    expect(rules[1], {'domain': ['google.com'], 'outbound': 'Proxy'});
+    expect(rules[2]['domain_suffix'], ['.apple.com']);
+    expect(rules[3]['ip_cidr'], ['1.1.1.1/32']);
+    expect(rules[4]['rule_set'], 'geoip-cn');
+    expect(rules[5]['outbound'], 'Proxy');
   });
 
-  test('produces valid JSON and mobile TUN defaults', () {
+  test('produces valid JSON and sing-box v1.14 mobile defaults', () {
     final json = const ClashToSingboxTransformer().transformYamlToJson(source);
     final config = jsonDecode(json) as Map<String, dynamic>;
     final inbound = (config['inbounds'] as List).single as Map<String, dynamic>;
+    final dnsServers = (config['dns']['servers'] as List).cast<Map<String, dynamic>>();
 
     expect(inbound['type'], 'tun');
     expect(inbound['stack'], 'gvisor');
-    expect(inbound['sniff'], isTrue);
+    expect(inbound.containsKey('sniff'), isFalse);
+    expect(dnsServers.first['type'], 'local');
+    expect(dnsServers[1]['type'], 'https');
+    expect(config['route']['rules'].first['action'], 'sniff');
     expect(config['outbounds'], isNotEmpty);
   });
 }

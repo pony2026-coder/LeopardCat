@@ -51,8 +51,8 @@ class ClashToSingboxTransformer {
       'log': {'level': 'info', 'timestamp': true},
       'dns': {
         'servers': [
-          {'tag': 'local', 'address': 'local'},
-          {'tag': 'remote', 'address': 'https://1.1.1.1/dns-query', 'detour': 'DIRECT'},
+          {'tag': 'local', 'type': 'local'},
+          {'tag': 'remote', 'type': 'https', 'server': '1.1.1.1', 'path': '/dns-query'},
         ],
         'final': 'remote',
         'strategy': 'prefer_ipv4',
@@ -66,15 +66,16 @@ class ClashToSingboxTransformer {
           'auto_route': true,
           'strict_route': true,
           'stack': 'gvisor',
-          'sniff': true,
-          'sniff_override_destination': true,
         },
       ],
       'outbounds': outbounds,
       'route': {
         'auto_detect_interface': true,
         'final': _finalOutbound(config, proxyGroups),
-        'rules': _rulesToSingbox(config['rules']),
+        'rules': [
+          {'action': 'sniff'},
+          ..._rulesToSingbox(config['rules']),
+        ],
       },
     };
   }
