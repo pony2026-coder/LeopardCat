@@ -43,6 +43,7 @@ class ShellPage extends StatefulWidget {
 class _ShellPageState extends State<ShellPage> {
   int _selectedIndex = 0;
   bool _isConnected = false;
+  String? _coreError;
   final CoreController _coreController = AndroidCoreController();
   final String _configJson = const ClashToSingboxTransformer().transformYamlToJson('''
 proxies: []
@@ -55,15 +56,40 @@ rules: []
       final status = _isConnected
           ? await _coreController.stop()
           : await _coreController.start(configJson: _configJson);
+      final resolvedStatus = status == CoreStatus.starting
+          ? await _awaitCoreStart()
+          : status;
       if (!mounted) return;
       setState(() {
-        _isConnected = status == CoreStatus.running || status == CoreStatus.starting;
+        _isConnected = resolvedStatus == CoreStatus.running;
+        _coreError = _coreController.lastError;
       });
     } on PlatformException {
-      if (mounted) setState(() => _isConnected = false);
+      if (mounted) {
+        setState(() {
+          _isConnected = false;
+          _coreError = '无法连接 Android 核心服务';
+        });
+      }
     } on MissingPluginException {
-      if (mounted) setState(() => _isConnected = false);
+      if (mounted) {
+        setState(() {
+          _isConnected = false;
+          _coreError = '当前平台不支持 Android 核心服务';
+        });
+      }
     }
+  }
+
+  Future<CoreStatus> _awaitCoreStart() async {
+    for (var attempt = 0; attempt < 10; attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      final status = await _coreController.status();
+      if (status != CoreStatus.stopped && status != CoreStatus.starting) {
+        return status;
+      }
+    }
+    return _coreController.status();
   }
 
   @override
@@ -71,6 +97,7 @@ rules: []
     final pages = <Widget>[
       HomePage(
         isConnected: _isConnected,
+        errorMessage: _coreError,
         onToggleConnection: _toggleCore,
       ),
       const ProfilesPage(),
@@ -191,9 +218,15 @@ class _BrandMark extends StatelessWidget {
 }
 
 class HomePage extends StatelessWidget {
-  const HomePage({required this.isConnected, required this.onToggleConnection, super.key});
+  const HomePage({
+    required this.isConnected,
+    required this.errorMessage,
+    required this.onToggleConnection,
+    super.key,
+  });
 
   final bool isConnected;
+  final String? errorMessage;
   final Future<void> Function() onToggleConnection;
 
   @override
@@ -212,6 +245,7 @@ class HomePage extends StatelessWidget {
               const SizedBox(height: 28),
               _ConnectionCard(
                 isConnected: isConnected,
+                errorMessage: errorMessage,
                 onToggle: onToggleConnection,
               ),
               const SizedBox(height: 18),
@@ -246,9 +280,14 @@ class HomePage extends StatelessWidget {
 }
 
 class _ConnectionCard extends StatelessWidget {
-  const _ConnectionCard({required this.isConnected, required this.onToggle});
+  const _ConnectionCard({
+    required this.isConnected,
+    required this.errorMessage,
+    required this.onToggle,
+  });
 
   final bool isConnected;
+  final String? errorMessage;
   final Future<void> Function() onToggle;
 
   @override
@@ -276,7 +315,12 @@ class _ConnectionCard extends StatelessWidget {
               children: [
                 Text(isConnected ? '服务运行中' : '服务未连接', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
                 const SizedBox(height: 5),
-                Text(isConnected ? '流量正在通过 LeopardCat' : '点击右侧按钮启动核心服务', style: const TextStyle(color: Color(0xFF898E98))),
+                Text(
+                  isConnected
+                      ? '流量正在通过 LeopardCat'
+                      : errorMessage ?? '点击右侧按钮启动核心服务',
+                  style: const TextStyle(color: Color(0xFF898E98)),
+                ),
               ],
             ),
           ),

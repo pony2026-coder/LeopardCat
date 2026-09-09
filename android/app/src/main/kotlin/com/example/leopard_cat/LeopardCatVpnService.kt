@@ -64,6 +64,7 @@ class LeopardCatVpnService : VpnService() {
                 } else {
                     engine.start(config)
                 }
+                lastError = engine.lastError()
                 Log.i(TAG, "ACTION_START -> status=$status")
             }
             ACTION_RELOAD -> {
@@ -74,11 +75,13 @@ class LeopardCatVpnService : VpnService() {
                 } else {
                     engine.reload(config)
                 }
+                lastError = engine.lastError()
                 Log.i(TAG, "ACTION_RELOAD -> status=$status")
             }
             ACTION_STOP -> {
                 Log.i(TAG, "ACTION_STOP")
                 status = engine.stop()
+                lastError = null
                 stopSelf()
             }
         }
@@ -90,6 +93,7 @@ class LeopardCatVpnService : VpnService() {
         if (::engine.isInitialized) engine.stop()
         tunDescriptor?.close()
         status = EngineResult.STOPPED
+        lastError = null
         super.onDestroy()
     }
 
@@ -111,5 +115,8 @@ class LeopardCatVpnService : VpnService() {
 
         @Volatile
         var downlinkBytes: Long = 0
+
+        @Volatile
+        var lastError: String? = null
     }
 }

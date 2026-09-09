@@ -18,6 +18,8 @@ captures/
 *.aab
 *.apk
 output-metadata.json
+*.aar
+*.sha256
 
 # IntelliJ
 *.iml

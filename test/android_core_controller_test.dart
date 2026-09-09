@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:leopard_cat/core/network/android_core_controller.dart';
+import 'package:leopard_cat/core/network/core_controller.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -48,5 +49,22 @@ void main() {
     expect(traffic.downlinkBytes, 512);
     expect(delay, 86);
     expect(calls.last.arguments, {'outbound': 'Proxy'});
+  });
+
+  test('decodes native status errors', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'status') {
+        return <String, Object?>{
+          'status': 'unavailable',
+          'error': 'start or reload service failed',
+        };
+      }
+      return 'stopped';
+    });
+    final controller = AndroidCoreController(channel: channel);
+
+    expect(await controller.status(), CoreStatus.unavailable);
+    expect(controller.lastError, 'start or reload service failed');
   });
 }

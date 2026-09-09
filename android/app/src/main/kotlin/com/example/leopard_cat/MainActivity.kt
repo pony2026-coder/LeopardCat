@@ -58,7 +58,7 @@ class MainActivity : FlutterActivity() {
 					"start" -> startCore(call.argument("config"), result)
 					"reload" -> reloadCore(call.argument("config"), result)
 					"stop" -> stopCore(result)
-					"status" -> result.success(currentStatus())
+					"status" -> result.success(statusPayload())
 					"queryTraffic" -> result.success(mapOf(
 						"uplink_bytes" to LeopardCatVpnService.uplinkBytes,
 						"downlink_bytes" to LeopardCatVpnService.downlinkBytes,
@@ -116,6 +116,11 @@ class MainActivity : FlutterActivity() {
 			EngineResult.STOPPED -> "stopped"
 		}
 	}
+
+	private fun statusPayload(): Map<String, String?> = mapOf(
+		"status" to currentStatus(),
+		"error" to LeopardCatVpnService.lastError,
+	)
 
 	override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
 		super.onActivityResult(requestCode, resultCode, data)

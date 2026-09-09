@@ -7,9 +7,14 @@ class AndroidCoreController implements CoreController {
       : _channel = channel ?? const MethodChannel('leopard_cat/core');
 
   final MethodChannel _channel;
+  String? _lastError;
+
+  @override
+  String? get lastError => _lastError;
 
   @override
   Future<CoreStatus> start({String? configJson}) async {
+    _lastError = null;
     final result = await _channel.invokeMethod<String>(
       'start',
       configJson == null ? null : {'config': configJson},
@@ -19,6 +24,7 @@ class AndroidCoreController implements CoreController {
 
   @override
   Future<CoreStatus> reload(String configJson) async {
+    _lastError = null;
     final result = await _channel.invokeMethod<String>(
       'reload',
       {'config': configJson},
@@ -28,14 +34,15 @@ class AndroidCoreController implements CoreController {
 
   @override
   Future<CoreStatus> stop() async {
+    _lastError = null;
     final result = await _channel.invokeMethod<String>('stop');
     return _statusFromValue(result);
   }
 
   @override
   Future<CoreStatus> status() async {
-    final result = await _channel.invokeMethod<String>('status');
-    return _statusFromValue(result);
+    final result = await _channel.invokeMethod<Object?>('status');
+    return _statusFromResult(result);
   }
 
   @override
@@ -60,6 +67,15 @@ class AndroidCoreController implements CoreController {
       'unavailable' => CoreStatus.unavailable,
       _ => CoreStatus.stopped,
     };
+  }
+
+  CoreStatus _statusFromResult(Object? result) {
+    if (result is Map) {
+      _lastError = result['error'] as String?;
+      return _statusFromValue(result['status'] as String?);
+    }
+    _lastError = null;
+    return _statusFromValue(result as String?);
   }
 
   int _intValue(Object? value) {
