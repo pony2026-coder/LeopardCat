@@ -89,10 +89,7 @@ class MainActivity : FlutterActivity() {
 			return
 		}
 
-		val serviceIntent = Intent(this, LeopardCatVpnService::class.java)
-		serviceIntent.action = LeopardCatVpnService.ACTION_START
-		serviceIntent.putExtra(LeopardCatVpnService.EXTRA_CONFIG_JSON, config)
-		startVpnService(serviceIntent)
+		startVpnService(createServiceIntent(LeopardCatVpnService.ACTION_START, config))
 		result.success("starting")
 	}
 
@@ -101,10 +98,7 @@ class MainActivity : FlutterActivity() {
 			result.success("stopped")
 			return
 		}
-		val serviceIntent = Intent(this, LeopardCatVpnService::class.java)
-		serviceIntent.action = LeopardCatVpnService.ACTION_RELOAD
-		serviceIntent.putExtra(LeopardCatVpnService.EXTRA_CONFIG_JSON, config)
-		startVpnService(serviceIntent)
+		startVpnService(createServiceIntent(LeopardCatVpnService.ACTION_RELOAD, config))
 		result.success(currentStatus())
 	}
 
@@ -155,16 +149,22 @@ class MainActivity : FlutterActivity() {
 		super.onActivityResult(requestCode, resultCode, data)
 		if (requestCode == vpnPermissionRequestCode && resultCode == RESULT_OK) {
 			pendingConfig?.let { config ->
-				val serviceIntent = Intent(this, LeopardCatVpnService::class.java)
-				serviceIntent.action = LeopardCatVpnService.ACTION_START
-				serviceIntent.putExtra(LeopardCatVpnService.EXTRA_CONFIG_JSON, config)
-				startVpnService(serviceIntent)
+				startVpnService(createServiceIntent(LeopardCatVpnService.ACTION_START, config))
 			}
 			pendingConfig = null
 		}
 	}
 
 	private var pendingConfig: String? = null
+
+	private fun createServiceIntent(action: String, config: String): Intent {
+		val configFile = java.io.File(filesDir, "runtime-config.json")
+		configFile.writeText(config)
+		return Intent(this, LeopardCatVpnService::class.java).apply {
+			this.action = action
+			putExtra(LeopardCatVpnService.EXTRA_CONFIG_PATH, configFile.absolutePath)
+		}
+	}
 
 	private fun startVpnService(intent: Intent) {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

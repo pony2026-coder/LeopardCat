@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const defaultProfileContent = '''
@@ -17,6 +19,7 @@ class ProviderFile {
     required this.url,
     required this.content,
     required this.updatedAt,
+    this.behavior,
   });
 
   final String name;
@@ -24,21 +27,24 @@ class ProviderFile {
   final String url;
   final String content;
   final DateTime updatedAt;
+  final String? behavior;
 
-  Map<String, String> toJson() => {
+    Map<String, String> toJson({bool includeContent = true}) => {
         'name': name,
         'kind': kind.name,
         'url': url,
-        'content': content,
+      if (includeContent) 'content': content,
         'updatedAt': updatedAt.toIso8601String(),
+        if (behavior != null) 'behavior': behavior!,
       };
 
   factory ProviderFile.fromJson(Map<String, dynamic> json) => ProviderFile(
         name: json['name'] as String,
         kind: ProviderFileKind.values.byName(json['kind'] as String),
         url: json['url'] as String,
-        content: json['content'] as String,
+        content: json['content'] as String? ?? '',
         updatedAt: DateTime.parse(json['updatedAt'] as String),
+        behavior: json['behavior'] as String?,
       );
 
   ProviderFile copyWith({String? content, DateTime? updatedAt}) => ProviderFile(
@@ -47,6 +53,7 @@ class ProviderFile {
         url: url,
         content: content ?? this.content,
         updatedAt: updatedAt ?? this.updatedAt,
+        behavior: behavior,
       );
 }
 
@@ -69,7 +76,7 @@ class ProxyProfile {
   final String? sourceContent;
   final List<ProviderFile> providerFiles;
 
-  Map<String, dynamic> toJson() => {
+  Map<String, dynamic> toJson({bool includeProviderContent = true}) => {
         'id': id,
         'name': name,
         'content': content,
@@ -77,7 +84,9 @@ class ProxyProfile {
         if (subscriptionUrl != null) 'subscriptionUrl': subscriptionUrl!,
         if (sourceContent != null) 'sourceContent': sourceContent!,
         if (providerFiles.isNotEmpty)
-          'providerFiles': providerFiles.map((file) => file.toJson()).toList(),
+          'providerFiles': providerFiles
+              .map((file) => file.toJson(includeContent: includeProviderContent))
+              .toList(),
       };
 
   factory ProxyProfile.fromJson(Map<String, dynamic> json) {
@@ -98,6 +107,7 @@ class ProxyProfile {
   ProxyProfile copyWith({
     String? content,
     DateTime? updatedAt,
+    String? subscriptionUrl,
     String? sourceContent,
     List<ProviderFile>? providerFiles,
   }) {
@@ -106,7 +116,7 @@ class ProxyProfile {
       name: name,
       content: content ?? this.content,
       updatedAt: updatedAt ?? this.updatedAt,
-      subscriptionUrl: subscriptionUrl,
+      subscriptionUrl: subscriptionUrl ?? this.subscriptionUrl,
       sourceContent: sourceContent ?? this.sourceContent,
       providerFiles: providerFiles ?? this.providerFiles,
     );
@@ -159,9 +169,12 @@ class ProfileState {
     );
   }
 
-  Map<String, dynamic> toJson() => {
+  Map<String, dynamic> toJson({bool includeProviderContent = true}) => {
         'activeProfileId': activeProfileId,
-        'profiles': profiles.map((profile) => profile.toJson()).toList(),
+        'profiles': profiles
+          .map((profile) =>
+            profile.toJson(includeProviderContent: includeProviderContent))
+          .toList(),
       };
 
   factory ProfileState.fromJson(Map<String, dynamic> json) {
@@ -186,6 +199,61 @@ abstract interface class ProfileStorage {
   Future<void> write(String value);
 }
 
+abstract interface class ProviderContentStorage {
+  Future<void> write(String profileId, List<ProviderFile> files);
+  Future<List<ProviderFile>> read(String profileId, List<ProviderFile> files);
+}
+
+class FileProviderContentStorage implements ProviderContentStorage {
+  FileProviderContentStorage({Future<Directory> Function()? directory})
+      : _directory = directory ?? getApplicationSupportDirectory;
+
+  final Future<Directory> Function() _directory;
+
+  @override
+  Future<void> write(String profileId, List<ProviderFile> files) async {
+    if (files.isEmpty) return;
+    final directory = await _profileDirectory(profileId);
+    await directory.create(recursive: true);
+    for (final file in files) {
+      await File('${directory.path}/${_fileName(file)}')
+          .writeAsString(file.content, flush: true);
+    }
+  }
+
+  @override
+  Future<List<ProviderFile>> read(
+    String profileId,
+    List<ProviderFile> files,
+  ) async {
+    if (files.isEmpty) return files;
+    final directory = await _profileDirectory(profileId);
+    return [
+      for (final file in files)
+        file.copyWith(content: await _readContent(directory, file)),
+    ];
+  }
+
+  Future<Directory> _profileDirectory(String profileId) async {
+    final root = await _directory();
+    return Directory('${root.path}/provider-content/${_safeIdentifier(profileId)}');
+  }
+
+  String _fileName(ProviderFile file) =>
+      '${file.kind.name}-${_safeIdentifier(file.name)}.yaml';
+
+  Future<String> _readContent(Directory directory, ProviderFile file) async {
+    try {
+      return await File('${directory.path}/${_fileName(file)}').readAsString();
+    } on FileSystemException {
+      return file.content;
+    }
+  }
+
+  String _safeIdentifier(String value) =>
+      value.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+}
+
 class SharedPreferencesProfileStorage implements ProfileStorage {
   SharedPreferencesProfileStorage({Future<SharedPreferences>? preferences})
       : _preferences = preferences ?? SharedPreferences.getInstance();
@@ -204,17 +272,33 @@ class SharedPreferencesProfileStorage implements ProfileStorage {
 }
 
 class ProfileRepository {
-  ProfileRepository({ProfileStorage? storage})
-      : _storage = storage ?? SharedPreferencesProfileStorage();
+  ProfileRepository({
+    ProfileStorage? storage,
+    ProviderContentStorage? providerContentStorage,
+  })  : _storage = storage ?? SharedPreferencesProfileStorage(),
+        _providerContentStorage =
+            providerContentStorage ?? FileProviderContentStorage();
 
   final ProfileStorage _storage;
+  final ProviderContentStorage _providerContentStorage;
 
   Future<ProfileState> load() async {
     final rawState = await _storage.read();
     if (rawState == null) return ProfileState.defaults();
     try {
-      return ProfileState.fromJson(
+      final state = ProfileState.fromJson(
           jsonDecode(rawState) as Map<String, dynamic>);
+      return state.copyWith(
+        profiles: [
+          for (final profile in state.profiles)
+            profile.copyWith(
+              providerFiles: await _providerContentStorage.read(
+                profile.id,
+                profile.providerFiles,
+              ),
+            ),
+        ],
+      );
     } on FormatException {
       return ProfileState.defaults();
     } on TypeError {
@@ -222,6 +306,10 @@ class ProfileRepository {
     }
   }
 
-  Future<void> save(ProfileState state) =>
-      _storage.write(jsonEncode(state.toJson()));
+  Future<void> save(ProfileState state) async {
+    for (final profile in state.profiles) {
+      await _providerContentStorage.write(profile.id, profile.providerFiles);
+    }
+    await _storage.write(jsonEncode(state.toJson(includeProviderContent: false)));
+  }
 }

@@ -9,6 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:leopard_cat/data/clash/clash_to_singbox_transformer.dart';
+import 'package:leopard_cat/data/clash/proxy_group.dart';
+import 'package:leopard_cat/data/profiles/profile_repository.dart';
 import 'package:leopard_cat/main.dart';
 
 void main() {
@@ -40,5 +42,56 @@ void main() {
 
     expect(find.text('geoip-cn'), findsOneWidget);
     expect(find.text(resource.url), findsOneWidget);
+  });
+
+  testWidgets('groups provider files into proxy and rule pages',
+      (WidgetTester tester) async {
+    final now = DateTime(2026);
+    final providers = [
+      ProviderFile(
+        name: 'proxy-source',
+        kind: ProviderFileKind.proxy,
+        url: 'https://example.com/proxy.yaml',
+        content: 'proxies: []',
+        updatedAt: now,
+      ),
+      ProviderFile(
+        name: 'rule-source',
+        kind: ProviderFileKind.rule,
+        url: 'https://example.com/rule.yaml',
+        content: 'payload: []',
+        updatedAt: now,
+      ),
+    ];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ProxyPage(
+            groups: const <ClashProxyGroup>[],
+            isLoading: false,
+            providerFiles: providers,
+            isConnected: false,
+            selectedOutbounds: const {},
+            outboundDelays: const {},
+            testingOutbounds: const {},
+            onDelayTest: (_) async {},
+            onSelectOutbound: (_, __) async {},
+            onViewProvider: (_) async {},
+            onRefreshProvider: (file) async => file,
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('订阅文件'));
+    await tester.pumpAndSettle();
+    expect(find.text('代理提供者'), findsOneWidget);
+    expect(find.text('自定义规则集'), findsOneWidget);
+
+    await tester.tap(find.text('代理提供者'));
+    await tester.pumpAndSettle();
+    expect(find.text('全部更新'), findsOneWidget);
+    expect(find.text('proxy-source'), findsOneWidget);
+    expect(find.text('rule-source'), findsNothing);
   });
 }

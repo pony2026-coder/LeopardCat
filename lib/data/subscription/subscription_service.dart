@@ -33,10 +33,35 @@ class SubscriptionService {
   Future<ProxyProfile> refresh(ProxyProfile profile) async {
     final url = profile.subscriptionUrl;
     if (url == null) throw const SubscriptionException('当前配置不是订阅配置');
-    final resolved = await _fetchValidatedContent(Uri.parse(url));
+    return updateSubscriptionUrl(profile, Uri.parse(url));
+  }
+
+  Future<ProxyProfile> rebuildCachedProviders(ProxyProfile profile) async {
+    final sourceContent = profile.sourceContent;
+    final subscriptionUrl = profile.subscriptionUrl;
+    if (sourceContent == null || subscriptionUrl == null) return profile;
+    final resolved = await _expandProviders(
+      sourceContent,
+      Uri.parse(subscriptionUrl),
+      cachedProviderFiles: profile.providerFiles,
+    );
+    _validateRuleProviders(resolved.providerFiles);
     return profile.copyWith(
       content: resolved.content,
       updatedAt: DateTime.now(),
+      providerFiles: resolved.providerFiles,
+    );
+  }
+
+  Future<ProxyProfile> updateSubscriptionUrl(
+    ProxyProfile profile,
+    Uri url,
+  ) async {
+    final resolved = await _fetchValidatedContent(url);
+    return profile.copyWith(
+      content: resolved.content,
+      updatedAt: DateTime.now(),
+      subscriptionUrl: url.toString(),
       sourceContent: resolved.sourceContent,
       providerFiles: resolved.providerFiles,
     );
@@ -85,6 +110,7 @@ class SubscriptionService {
     try {
       final downloaded = _decodeSubscriptionContent(await _client.fetch(url));
       final resolved = await _expandProviders(downloaded, url);
+      _validateRuleProviders(resolved.providerFiles);
       _transformer.transformYamlToJson(resolved.content);
       return resolved;
     } on FormatException {
@@ -100,6 +126,15 @@ class SubscriptionService {
       return decoded.contains(':') ? decoded : content;
     } on FormatException {
       return content;
+    }
+  }
+
+  void _validateRuleProviders(List<ProviderFile> files) {
+    for (final file in files.where((file) => file.kind == ProviderFileKind.rule)) {
+      _transformer.ruleProviderSource(
+        file.content,
+        behavior: file.behavior ?? 'classical',
+      );
     }
   }
 
@@ -172,8 +207,6 @@ class SubscriptionService {
     }
 
     final rules = _plainList(config['rules']);
-    final expandedRules = <Object?>[];
-    final ruleProviderPayloads = <String, List<Object?>>{};
     for (final entry in ruleProviders.entries) {
       final provider = _plainMap(entry.value);
       if (_providerType(provider) != 'http') {
@@ -192,36 +225,19 @@ class SubscriptionService {
       if (payload.isEmpty) {
         throw SubscriptionException('规则 provider ${entry.key} 没有可用规则');
       }
-      ruleProviderPayloads[entry.key] = payload;
       providerFiles.add(ProviderFile(
         name: entry.key,
         kind: ProviderFileKind.rule,
         url: providerUrl.toString(),
         content: providerContent,
         updatedAt: cachedFile?.updatedAt ?? DateTime.now(),
+        behavior: '${provider['behavior'] ?? 'classical'}'.toLowerCase(),
       ));
-    }
-    for (final ruleValue in rules) {
-      final fields =
-          '$ruleValue'.split(',').map((field) => field.trim()).toList();
-      if (fields.length < 3 || fields.first.toUpperCase() != 'RULE-SET') {
-        expandedRules.add(ruleValue);
-        continue;
-      }
-      final provider = _plainMap(ruleProviders[fields[1]]);
-      final payload = ruleProviderPayloads[fields[1]] ?? const <Object?>[];
-      if (payload.isEmpty) {
-        throw SubscriptionException('规则 provider ${fields[1]} 没有可用规则');
-      }
-      for (final payloadRule in payload) {
-        final providerFields = _providerRuleFields(provider, payloadRule);
-        expandedRules.add([...providerFields, fields.last].join(','));
-      }
     }
 
     config['proxies'] = proxies;
     config['proxy-groups'] = groups;
-    config['rules'] = expandedRules;
+    config['rules'] = rules;
     config.remove('proxy-providers');
     config.remove('rule-providers');
     return _ResolvedSubscription(
@@ -236,24 +252,6 @@ class SubscriptionService {
 
   String _providerKey(ProviderFileKind kind, String name) =>
       '${kind.name}:$name';
-
-  List<String> _providerRuleFields(
-    Map<String, dynamic> provider,
-    Object? payloadRule,
-  ) {
-    final value = '$payloadRule'.trim();
-    return switch ('${provider['behavior'] ?? 'classical'}'.toLowerCase()) {
-      'classical' => value.split(',').map((field) => field.trim()).toList(),
-      'domain' => [
-          if (value.startsWith('+.')) 'DOMAIN-SUFFIX' else 'DOMAIN',
-          value.startsWith('+.') ? value.substring(2) : value,
-        ],
-      'ipcidr' => [value.contains(':') ? 'IP-CIDR6' : 'IP-CIDR', value],
-      final behavior => throw SubscriptionException(
-          '不支持的规则 provider behavior：$behavior',
-        ),
-    };
-  }
 
   String _providerType(Map<String, dynamic> provider) =>
       '${provider['type'] ?? ''}'.toLowerCase();

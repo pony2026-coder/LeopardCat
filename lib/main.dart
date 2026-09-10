@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,6 +8,7 @@ import 'core/network/android_core_controller.dart';
 import 'core/network/core_controller.dart';
 import 'data/clash/clash_to_singbox_transformer.dart';
 import 'data/clash/proxy_group.dart';
+import 'data/clash/rule_provider_store.dart';
 import 'data/profiles/profile_repository.dart';
 import 'data/subscription/subscription_client.dart';
 import 'data/subscription/subscription_service.dart';
@@ -66,24 +68,45 @@ class _ShellPageState extends State<ShellPage> {
     client: HttpSubscriptionClient(),
     transformer: const ClashToSingboxTransformer(),
   );
+  final RuleProviderStore _ruleProviderStore = RuleProviderStore();
   ProfileState _profileState = ProfileState.defaults();
   bool _profilesLoaded = false;
+  bool _isImportingSubscription = false;
+  String? _cachedConfigKey;
+  Map<String, dynamic>? _cachedConfig;
+  String? _cachedConfigJson;
+  String? _cachedProxyGroupsContent;
+  List<ClashProxyGroup>? _cachedProxyGroups;
+  bool _isLoadingProxyGroups = false;
+  List<StaticResource>? _cachedStaticResources;
 
-  String get _configJson => const ClashToSingboxTransformer()
-      .transformYamlToJson(_profileState.activeProfile.content);
+  Map<String, dynamic>? get _activeConfig => _cachedConfig;
+
+  Future<String> _prepareConfigJson() async {
+    final profile = _profileState.activeProfile;
+    final references = await _ruleProviderStore.writeForProfile(profile);
+    final cacheKey = '${profile.id}:${profile.content}:${references.map((item) => item.path).join('|')}';
+    if (_cachedConfigKey != cacheKey || _cachedConfig == null) {
+      _cachedConfigKey = cacheKey;
+      _cachedConfig = const ClashToSingboxTransformer().transformYaml(
+        profile.content,
+        ruleProviders: references,
+      );
+      _cachedConfigJson = jsonEncode(_cachedConfig);
+    }
+    return _cachedConfigJson!;
+  }
 
   String? get _delayTestOutbound {
-    final config = const ClashToSingboxTransformer()
-        .transformYaml(_profileState.activeProfile.content);
-    final outbound =
-        (config['route'] as Map<String, dynamic>)['final'] as String?;
+    final route = _activeConfig?['route'];
+    final outbound = route is Map ? route['final'] as String? : null;
     return outbound == 'DIRECT' || outbound == 'REJECT' ? null : outbound;
   }
 
-  List<ClashProxyGroup> get _proxyGroups =>
-      parseClashProxyGroups(_profileState.activeProfile.content);
+  List<ClashProxyGroup> get _proxyGroups => _cachedProxyGroups ?? const [];
 
   List<StaticResource> get _staticResources {
+    if (_cachedStaticResources != null) return _cachedStaticResources!;
     final resources = <String, StaticResource>{};
     const transformer = ClashToSingboxTransformer();
     for (final profile in _profileState.profiles) {
@@ -91,7 +114,37 @@ class _ShellPageState extends State<ShellPage> {
         resources.putIfAbsent(resource.tag, () => resource);
       }
     }
-    return resources.values.toList(growable: false);
+    return _cachedStaticResources = resources.values.toList(growable: false);
+  }
+
+  void _invalidateProfileCaches() {
+    _cachedConfigKey = null;
+    _cachedConfig = null;
+    _cachedConfigJson = null;
+    _cachedProxyGroupsContent = null;
+    _cachedProxyGroups = null;
+    _isLoadingProxyGroups = false;
+    _cachedStaticResources = null;
+  }
+
+  Future<void> _loadProxyGroups() async {
+    final content = _profileState.activeProfile.content;
+    if (_cachedProxyGroupsContent == content && _cachedProxyGroups != null) {
+      return;
+    }
+    setState(() => _isLoadingProxyGroups = true);
+    final groups = await parseClashProxyGroupsInBackground(content);
+    if (!mounted || _profileState.activeProfile.content != content) return;
+    setState(() {
+      _cachedProxyGroupsContent = content;
+      _cachedProxyGroups = groups;
+      _isLoadingProxyGroups = false;
+    });
+  }
+
+  void _selectPage(int index) {
+    if (_selectedIndex != index) setState(() => _selectedIndex = index);
+    if (index == 1) unawaited(_loadProxyGroups());
   }
 
   @override
@@ -113,10 +166,25 @@ class _ShellPageState extends State<ShellPage> {
   }
 
   Future<void> _loadProfiles() async {
-    final profileState = await _profileRepository.load();
+    final loadedState = await _profileRepository.load();
+    final profiles = <ProxyProfile>[];
+    var migrated = false;
+    for (final profile in loadedState.profiles) {
+      try {
+        final rebuilt =
+            await _subscriptionService.rebuildCachedProviders(profile);
+        profiles.add(rebuilt);
+        migrated = migrated || rebuilt.content != profile.content;
+      } on SubscriptionException {
+        profiles.add(profile);
+      }
+    }
+    final profileState = loadedState.copyWith(profiles: profiles);
+    if (migrated) await _profileRepository.save(profileState);
     if (!mounted) return;
     setState(() {
       _profileState = profileState;
+      _invalidateProfileCaches();
       _profilesLoaded = true;
     });
   }
@@ -125,7 +193,7 @@ class _ShellPageState extends State<ShellPage> {
     try {
       final status = _isConnected
           ? await _coreController.stop()
-          : await _coreController.start(configJson: _configJson);
+          : await _coreController.start(configJson: await _prepareConfigJson());
       final resolvedStatus =
           status == CoreStatus.starting ? await _awaitCoreStart() : status;
       if (!mounted) return;
@@ -190,6 +258,7 @@ class _ShellPageState extends State<ShellPage> {
     if (!mounted) return;
     setState(() {
       _profileState = nextState;
+      _invalidateProfileCaches();
       _selectedOutbounds.clear();
       _outboundDelays.clear();
     });
@@ -198,7 +267,7 @@ class _ShellPageState extends State<ShellPage> {
     if (!_isConnected) return;
 
     try {
-      final status = await _coreController.reload(_configJson);
+      final status = await _coreController.reload(await _prepareConfigJson());
       if (!mounted) return;
       setState(() {
         _isConnected = status == CoreStatus.running;
@@ -237,6 +306,7 @@ class _ShellPageState extends State<ShellPage> {
       if (!mounted) return;
       setState(() {
         _profileState = nextState;
+        _invalidateProfileCaches();
         _selectedOutbounds.clear();
         _outboundDelays.clear();
       });
@@ -259,6 +329,7 @@ class _ShellPageState extends State<ShellPage> {
       _showProfileMessage('订阅地址无效');
       return;
     }
+    setState(() => _isImportingSubscription = true);
     try {
       final profile = await _subscriptionService.importSubscription(
           name: result.name, url: url);
@@ -270,11 +341,14 @@ class _ShellPageState extends State<ShellPage> {
       if (!mounted) return;
       setState(() {
         _profileState = nextState;
+        _invalidateProfileCaches();
         _selectedOutbounds.clear();
         _outboundDelays.clear();
       });
     } on SubscriptionException catch (error) {
       _showProfileMessage(error.message);
+    } finally {
+      if (mounted) setState(() => _isImportingSubscription = false);
     }
   }
 
@@ -291,12 +365,58 @@ class _ShellPageState extends State<ShellPage> {
       );
       await _profileRepository.save(nextState);
       if (!mounted) return;
-      setState(() => _profileState = nextState);
+      setState(() {
+        _profileState = nextState;
+        _invalidateProfileCaches();
+      });
       if (_isConnected && _profileState.activeProfileId == profileId) {
         await _selectProfile(profileId);
       }
     } on SubscriptionException catch (error) {
       _showProfileMessage(error.message);
+    }
+  }
+
+  Future<void> _editSubscriptionUrl(String profileId) async {
+    final profile =
+        _profileState.profiles.firstWhere((item) => item.id == profileId);
+    final subscriptionUrl = profile.subscriptionUrl;
+    if (subscriptionUrl == null) return;
+    final urlText = await showDialog<String>(
+      context: context,
+      builder: (context) => _SubscriptionUrlDialog(initialUrl: subscriptionUrl),
+    );
+    if (urlText == null || urlText == subscriptionUrl) return;
+    final url = Uri.tryParse(urlText);
+    if (url == null || (url.scheme != 'http' && url.scheme != 'https')) {
+      _showProfileMessage('订阅地址无效');
+      return;
+    }
+
+    setState(() => _isImportingSubscription = true);
+    try {
+      final refreshed =
+          await _subscriptionService.updateSubscriptionUrl(profile, url);
+      final nextState = _profileState.copyWith(
+        profiles: [
+          for (final item in _profileState.profiles)
+            item.id == profileId ? refreshed : item,
+        ],
+      );
+      await _profileRepository.save(nextState);
+      if (!mounted) return;
+      setState(() {
+        _profileState = nextState;
+        _invalidateProfileCaches();
+      });
+      if (_isConnected && nextState.activeProfileId == profileId) {
+        await _selectProfile(profileId);
+      }
+      _showProfileMessage('订阅链接已更新');
+    } on SubscriptionException catch (error) {
+      _showProfileMessage(error.message);
+    } finally {
+      if (mounted) setState(() => _isImportingSubscription = false);
     }
   }
 
@@ -315,11 +435,12 @@ class _ShellPageState extends State<ShellPage> {
       if (!mounted) return null;
       setState(() {
         _profileState = nextState;
+        _invalidateProfileCaches();
         _selectedOutbounds.clear();
         _outboundDelays.clear();
       });
       if (_isConnected) {
-        final status = await _coreController.reload(_configJson);
+        final status = await _coreController.reload(await _prepareConfigJson());
         if (!mounted) return null;
         setState(() {
           _isConnected = status == CoreStatus.running;
@@ -472,6 +593,7 @@ class _ShellPageState extends State<ShellPage> {
     if (!mounted) return;
     setState(() {
       _profileState = nextState;
+      _invalidateProfileCaches();
       if (wasActive) {
         _lastDelay = null;
         _delayMessage = null;
@@ -481,7 +603,7 @@ class _ShellPageState extends State<ShellPage> {
     });
     if (!wasActive || !_isConnected) return;
     try {
-      final status = await _coreController.reload(_configJson);
+      final status = await _coreController.reload(await _prepareConfigJson());
       if (!mounted) return;
       setState(() {
         _isConnected = status == CoreStatus.running;
@@ -572,8 +694,8 @@ class _ShellPageState extends State<ShellPage> {
 
   @override
   Widget build(BuildContext context) {
-    final pages = <Widget>[
-      HomePage(
+    final page = switch (_selectedIndex) {
+      0 => HomePage(
         isConnected: _isConnected,
         errorMessage: _coreError,
         traffic: _traffic,
@@ -586,8 +708,9 @@ class _ShellPageState extends State<ShellPage> {
         onToggleConnection: _toggleCore,
         onDelayTest: _runDelayTest,
       ),
-      ProxyPage(
+      1 => ProxyPage(
         groups: _proxyGroups,
+        isLoading: _isLoadingProxyGroups,
         providerFiles: _profileState.activeProfile.providerFiles,
         isConnected: _isConnected,
         selectedOutbounds: _selectedOutbounds,
@@ -596,20 +719,23 @@ class _ShellPageState extends State<ShellPage> {
         onDelayTest: _runOutboundDelayTest,
         onSelectOutbound: _selectOutbound,
         onViewProvider: _showProviderFile,
+        onRefreshProvider: _refreshProvider,
       ),
-      ProfilesPage(
+      2 => ProfilesPage(
         profiles: _profileState.profiles,
         activeProfileId: _profileState.activeProfileId,
         isLoading: !_profilesLoaded,
+        isImportingSubscription: _isImportingSubscription,
         onSelect: _selectProfile,
         onView: _showProfileDetails,
         onDelete: _deleteProfile,
         onAdd: _addProfile,
         onImportSubscription: _importSubscription,
         onRefreshSubscription: _refreshSubscription,
+        onEditSubscriptionUrl: _editSubscriptionUrl,
       ),
-      SettingsPage(staticResources: _staticResources),
-    ];
+      _ => SettingsPage(staticResources: _staticResources),
+    };
     return LayoutBuilder(
       builder: (context, constraints) {
         final isWide = constraints.maxWidth >= 720;
@@ -620,10 +746,9 @@ class _ShellPageState extends State<ShellPage> {
                 if (isWide)
                   _NavigationRail(
                     selectedIndex: _selectedIndex,
-                    onSelected: (index) =>
-                        setState(() => _selectedIndex = index),
+                    onSelected: _selectPage,
                   ),
-                Expanded(child: pages[_selectedIndex]),
+                Expanded(child: page),
               ],
             ),
           ),
@@ -631,8 +756,7 @@ class _ShellPageState extends State<ShellPage> {
               ? null
               : NavigationBar(
                   selectedIndex: _selectedIndex,
-                  onDestinationSelected: (index) =>
-                      setState(() => _selectedIndex = index),
+                  onDestinationSelected: _selectPage,
                   destinations: const [
                     NavigationDestination(
                       icon: Icon(Icons.dashboard_outlined),
@@ -969,9 +1093,10 @@ class _Metric extends StatelessWidget {
   }
 }
 
-class ProxyPage extends StatelessWidget {
+class ProxyPage extends StatefulWidget {
   const ProxyPage({
     required this.groups,
+    required this.isLoading,
     required this.providerFiles,
     required this.isConnected,
     required this.selectedOutbounds,
@@ -980,10 +1105,12 @@ class ProxyPage extends StatelessWidget {
     required this.onDelayTest,
     required this.onSelectOutbound,
     required this.onViewProvider,
+    required this.onRefreshProvider,
     super.key,
   });
 
   final List<ClashProxyGroup> groups;
+  final bool isLoading;
   final List<ProviderFile> providerFiles;
   final bool isConnected;
   final Map<String, String> selectedOutbounds;
@@ -993,9 +1120,68 @@ class ProxyPage extends StatelessWidget {
   final Future<void> Function(ClashProxyGroup group, String outbound)
       onSelectOutbound;
   final Future<void> Function(ProviderFile providerFile) onViewProvider;
+  final Future<ProviderFile?> Function(ProviderFile providerFile)
+      onRefreshProvider;
+
+  @override
+  State<ProxyPage> createState() => _ProxyPageState();
+}
+
+class _ProxyPageState extends State<ProxyPage> {
+  ProviderFileKind? _selectedProviderKind;
+  bool _isRefreshingAll = false;
+  final Set<String> _refreshingProviders = {};
+
+  List<ProviderFile> get _selectedFiles => widget.providerFiles
+      .where((file) => file.kind == _selectedProviderKind)
+      .toList();
+
+  String _providerKey(ProviderFile file) => '${file.kind.name}:${file.name}';
+
+  Future<void> _refreshProvider(ProviderFile file) async {
+    final key = _providerKey(file);
+    setState(() => _refreshingProviders.add(key));
+    try {
+      await widget.onRefreshProvider(file);
+    } finally {
+      if (mounted) setState(() => _refreshingProviders.remove(key));
+    }
+  }
+
+  Future<void> _refreshAll() async {
+    final files = List<ProviderFile>.of(_selectedFiles);
+    if (files.isEmpty) return;
+    setState(() => _isRefreshingAll = true);
+    try {
+      for (final file in files) {
+        if (!mounted) return;
+        await widget.onRefreshProvider(file);
+      }
+    } finally {
+      if (mounted) setState(() => _isRefreshingAll = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    if (_selectedProviderKind != null) {
+      return _ProviderFilesPage(
+        title: _selectedProviderKind == ProviderFileKind.proxy
+            ? '代理提供者'
+            : '自定义规则集',
+        files: _selectedFiles,
+        isRefreshingAll: _isRefreshingAll,
+        refreshingProviders: _refreshingProviders,
+        onBack: () => setState(() => _selectedProviderKind = null),
+        onView: widget.onViewProvider,
+        onRefresh: _refreshProvider,
+        onRefreshAll: _refreshAll,
+      );
+    }
+    final hasProxyProviders = widget.providerFiles
+        .any((file) => file.kind == ProviderFileKind.proxy);
+    final hasRuleProviders = widget.providerFiles
+        .any((file) => file.kind == ProviderFileKind.rule);
     return ListView(
       padding: const EdgeInsets.fromLTRB(24, 28, 24, 48),
       children: [
@@ -1003,50 +1189,159 @@ class ProxyPage extends StatelessWidget {
           eyebrow: 'PROXY GROUPS',
           title: '代理',
           subtitle: '测速节点并为策略组选择出站。',
-          action: providerFiles.isEmpty
+          action: !hasProxyProviders && !hasRuleProviders
               ? null
-              : PopupMenuButton<ProviderFile>(
-                  tooltip: '查看 provider 文件',
+              : PopupMenuButton<ProviderFileKind>(
+                  tooltip: '订阅文件',
                   icon: const Icon(Icons.folder_open_outlined),
-                  onSelected: onViewProvider,
+                  onSelected: (kind) =>
+                      setState(() => _selectedProviderKind = kind),
                   itemBuilder: (context) => [
-                    for (final file in providerFiles)
-                      PopupMenuItem(
-                        value: file,
+                    if (hasProxyProviders)
+                      const PopupMenuItem(
+                        value: ProviderFileKind.proxy,
                         child: ListTile(
                           contentPadding: EdgeInsets.zero,
-                          leading: Icon(file.kind == ProviderFileKind.proxy
-                              ? Icons.dns_outlined
-                              : Icons.rule_folder_outlined),
-                          title: Text(file.name),
-                          subtitle: Text(file.kind == ProviderFileKind.proxy
-                              ? '代理 provider'
-                              : '规则 provider'),
+                          leading: Icon(Icons.dns_outlined),
+                          title: Text('代理提供者'),
+                        ),
+                      ),
+                    if (hasRuleProviders)
+                      const PopupMenuItem(
+                        value: ProviderFileKind.rule,
+                        child: ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.rule_folder_outlined),
+                          title: Text('自定义规则集'),
                         ),
                       ),
                   ],
                 ),
         ),
         const SizedBox(height: 20),
-        if (!isConnected) const _ProxyConnectionHint(),
-        if (!isConnected) const SizedBox(height: 18),
-        if (groups.isEmpty)
+        if (!widget.isConnected) const _ProxyConnectionHint(),
+        if (!widget.isConnected) const SizedBox(height: 18),
+        if (widget.isLoading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 32),
+            child: Center(child: CircularProgressIndicator()),
+          )
+        else if (widget.groups.isEmpty)
           const _ProxyEmptyState()
         else
-          ...groups.map(
+          ...widget.groups.map(
             (group) => Padding(
               padding: const EdgeInsets.only(bottom: 14),
               child: _ProxyGroupCard(
                 group: group,
-                isConnected: isConnected,
+                isConnected: widget.isConnected,
                 selectedOutbound:
-                    selectedOutbounds[group.name] ?? group.selectedProxy,
-                outboundDelays: outboundDelays,
-                testingOutbounds: testingOutbounds,
-                onDelayTest: onDelayTest,
-                onSelectOutbound: onSelectOutbound,
+                  widget.selectedOutbounds[group.name] ?? group.selectedProxy,
+                outboundDelays: widget.outboundDelays,
+                testingOutbounds: widget.testingOutbounds,
+                onDelayTest: widget.onDelayTest,
+                onSelectOutbound: widget.onSelectOutbound,
               ),
             ),
+          ),
+      ],
+    );
+  }
+}
+
+class _ProviderFilesPage extends StatelessWidget {
+  const _ProviderFilesPage({
+    required this.title,
+    required this.files,
+    required this.isRefreshingAll,
+    required this.refreshingProviders,
+    required this.onBack,
+    required this.onView,
+    required this.onRefresh,
+    required this.onRefreshAll,
+  });
+
+  final String title;
+  final List<ProviderFile> files;
+  final bool isRefreshingAll;
+  final Set<String> refreshingProviders;
+  final VoidCallback onBack;
+  final Future<void> Function(ProviderFile providerFile) onView;
+  final Future<void> Function(ProviderFile providerFile) onRefresh;
+  final Future<void> Function() onRefreshAll;
+
+  String _providerKey(ProviderFile file) => '${file.kind.name}:${file.name}';
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(24, 28, 24, 48),
+      children: [
+        _PageHeader(
+          eyebrow: 'SUBSCRIPTION FILES',
+          title: title,
+          subtitle: '查看订阅文件并手动更新。',
+          action: FilledButton.icon(
+            onPressed: isRefreshingAll ? null : onRefreshAll,
+            icon: isRefreshingAll
+                ? const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh),
+            label: Text(isRefreshingAll ? '更新中' : '全部更新'),
+          ),
+        ),
+        const SizedBox(height: 16),
+        TextButton.icon(
+          onPressed: onBack,
+          icon: const Icon(Icons.arrow_back),
+          label: const Text('返回代理'),
+        ),
+        const SizedBox(height: 12),
+        if (files.isEmpty)
+          const _ProxyEmptyState()
+        else
+          ...files.map(
+            (file) {
+              final isRefreshing = refreshingProviders.contains(
+                _providerKey(file),
+              );
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Material(
+                  color: const Color(0xFF1A1C21),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    side: const BorderSide(color: Color(0xFF292C33)),
+                  ),
+                  child: ListTile(
+                    leading: Icon(file.kind == ProviderFileKind.proxy
+                        ? Icons.dns_outlined
+                        : Icons.rule_folder_outlined),
+                    title: Text(file.name),
+                    subtitle: Text(
+                      file.url,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    onTap: () => onView(file),
+                    trailing: IconButton(
+                      tooltip: '更新',
+                      onPressed: isRefreshing || isRefreshingAll
+                          ? null
+                          : () => onRefresh(file),
+                      icon: isRefreshing
+                          ? const SizedBox.square(
+                              dimension: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.refresh),
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
       ],
     );
@@ -1222,24 +1517,28 @@ class ProfilesPage extends StatelessWidget {
     required this.profiles,
     required this.activeProfileId,
     required this.isLoading,
+    required this.isImportingSubscription,
     required this.onSelect,
     required this.onView,
     required this.onDelete,
     required this.onAdd,
     required this.onImportSubscription,
     required this.onRefreshSubscription,
+    required this.onEditSubscriptionUrl,
     super.key,
   });
 
   final List<ProxyProfile> profiles;
   final String activeProfileId;
   final bool isLoading;
+  final bool isImportingSubscription;
   final ValueChanged<String> onSelect;
   final ValueChanged<String> onView;
   final ValueChanged<String> onDelete;
   final Future<void> Function() onAdd;
   final Future<void> Function() onImportSubscription;
   final ValueChanged<String> onRefreshSubscription;
+  final ValueChanged<String> onEditSubscriptionUrl;
 
   @override
   Widget build(BuildContext context) {
@@ -1258,10 +1557,31 @@ class ProfilesPage extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(
                 child: OutlinedButton.icon(
-                    onPressed: onImportSubscription,
-                    icon: const Icon(Icons.link),
-                    label: const Text('导入订阅'))),
+                    onPressed:
+                        isImportingSubscription ? null : onImportSubscription,
+                    icon: isImportingSubscription
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.link),
+                    label: Text(isImportingSubscription ? '正在下载' : '导入订阅'))),
           ]),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 220),
+            transitionBuilder: (child, animation) => SizeTransition(
+              sizeFactor: animation,
+              child: FadeTransition(opacity: animation, child: child),
+            ),
+            child: isImportingSubscription
+                ? const Padding(
+                    key: ValueKey('subscription-download-progress'),
+                    padding: EdgeInsets.only(top: 16),
+                    child: _SubscriptionDownloadProgress(),
+                  )
+                : const SizedBox(key: ValueKey('no-subscription-download')),
+          ),
           const SizedBox(height: 18),
           if (isLoading)
             const Center(
@@ -1281,8 +1601,41 @@ class ProfilesPage extends StatelessWidget {
                   onRefresh: profile.subscriptionUrl == null
                       ? null
                       : () => onRefreshSubscription(profile.id),
+                    onEditSubscriptionUrl: profile.subscriptionUrl == null
+                      ? null
+                      : () => onEditSubscriptionUrl(profile.id),
                 )),
         ]);
+  }
+}
+
+class _SubscriptionDownloadProgress extends StatelessWidget {
+  const _SubscriptionDownloadProgress();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1C21),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFF343741)),
+      ),
+      child: const Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.downloading_outlined, color: Color(0xFF63C7D8)),
+              SizedBox(width: 10),
+              Expanded(child: Text('正在下载并解析订阅')),
+            ],
+          ),
+          SizedBox(height: 12),
+          LinearProgressIndicator(),
+        ],
+      ),
+    );
   }
 }
 
@@ -1295,6 +1648,7 @@ class _ProfileTile extends StatelessWidget {
     required this.onView,
     this.onDelete,
     this.onRefresh,
+    this.onEditSubscriptionUrl,
   });
   final String name;
   final String detail;
@@ -1303,6 +1657,7 @@ class _ProfileTile extends StatelessWidget {
   final VoidCallback onView;
   final VoidCallback? onDelete;
   final VoidCallback? onRefresh;
+  final VoidCallback? onEditSubscriptionUrl;
 
   @override
   Widget build(BuildContext context) {
@@ -1331,6 +1686,11 @@ class _ProfileTile extends StatelessWidget {
                   tooltip: '更新订阅',
                   onPressed: onRefresh,
                   icon: const Icon(Icons.refresh)),
+            if (onEditSubscriptionUrl != null)
+              IconButton(
+                  tooltip: '修改订阅链接',
+                  onPressed: onEditSubscriptionUrl,
+                  icon: const Icon(Icons.edit_outlined)),
             if (onDelete != null)
               IconButton(
                   tooltip: '删除配置',
@@ -1462,6 +1822,56 @@ class _SubscriptionFormDialogState extends State<_SubscriptionFormDialog> {
                 _nameController.text.trim(), _urlController.text.trim()),
           ),
           child: const Text('导入'),
+        ),
+      ],
+    );
+  }
+}
+
+class _SubscriptionUrlDialog extends StatefulWidget {
+  const _SubscriptionUrlDialog({required this.initialUrl});
+
+  final String initialUrl;
+
+  @override
+  State<_SubscriptionUrlDialog> createState() => _SubscriptionUrlDialogState();
+}
+
+class _SubscriptionUrlDialogState extends State<_SubscriptionUrlDialog> {
+  late final TextEditingController _urlController =
+      TextEditingController(text: widget.initialUrl);
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('修改订阅链接'),
+      content: SizedBox(
+        width: 420,
+        child: TextField(
+          controller: _urlController,
+          decoration: const InputDecoration(labelText: '订阅地址'),
+          keyboardType: TextInputType.url,
+          autofocus: true,
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: () {
+            final url = _urlController.text.trim();
+            if (url.isNotEmpty) Navigator.pop(context, url);
+          },
+          icon: const Icon(Icons.download_outlined),
+          label: const Text('保存并下载'),
         ),
       ],
     );

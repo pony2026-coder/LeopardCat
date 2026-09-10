@@ -1,3 +1,5 @@
+import 'dart:isolate';
+
 import 'package:yaml/yaml.dart';
 
 class ClashProxyGroup {
@@ -17,14 +19,19 @@ class ClashProxyGroup {
 }
 
 List<ClashProxyGroup> parseClashProxyGroups(String source) {
-  final document = loadYaml(source);
-  if (document is! YamlMap || document['proxy-groups'] is! YamlList) return const [];
+  return parseClashProxyGroupsFromDocument(loadYaml(source));
+}
 
-    final groups = document['proxy-groups'] as YamlList;
-    return groups
-      .whereType<YamlMap>()
+List<ClashProxyGroup> parseClashProxyGroupsFromDocument(Object? document) {
+  if (document is! Map || document['proxy-groups'] is! Iterable) {
+    return const [];
+  }
+
+  final groups = document['proxy-groups'] as Iterable;
+  return groups
+      .whereType<Map>()
       .map<ClashProxyGroup>((group) {
-        final proxies = (group['proxies'] as YamlList?)
+        final proxies = (group['proxies'] as Iterable?)
                 ?.map((proxy) => '$proxy'.trim())
                 .where((proxy) => proxy.isNotEmpty)
                 .toList() ??
@@ -37,5 +44,32 @@ List<ClashProxyGroup> parseClashProxyGroups(String source) {
         );
       })
       .where((group) => group.name.isNotEmpty && group.proxies.isNotEmpty)
+      .toList(growable: false);
+}
+
+Future<List<ClashProxyGroup>> parseClashProxyGroupsInBackground(
+  String source,
+) async {
+  final groups = await Isolate.run(() {
+    return parseClashProxyGroups(source)
+        .map(
+          (group) => <String, Object>{
+            'name': group.name,
+            'type': group.type,
+            'proxies': group.proxies,
+            'selectedProxy': group.selectedProxy,
+          },
+        )
+        .toList(growable: false);
+  });
+  return groups
+      .map(
+        (group) => ClashProxyGroup(
+          name: group['name']! as String,
+          type: group['type']! as String,
+          proxies: (group['proxies']! as List<Object>).cast<String>(),
+          selectedProxy: group['selectedProxy']! as String,
+        ),
+      )
       .toList(growable: false);
 }

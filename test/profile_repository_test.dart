@@ -4,7 +4,10 @@ import 'package:leopard_cat/data/profiles/profile_repository.dart';
 void main() {
   test('persists profiles and the active profile selection', () async {
     final storage = _MemoryProfileStorage();
-    final repository = ProfileRepository(storage: storage);
+    final repository = ProfileRepository(
+      storage: storage,
+      providerContentStorage: _MemoryProviderContentStorage(),
+    );
     final profile = ProxyProfile(
       id: 'work',
       name: '工作网络',
@@ -23,7 +26,10 @@ void main() {
 
   test('persists subscription source and provider files', () async {
     final storage = _MemoryProfileStorage();
-    final repository = ProfileRepository(storage: storage);
+    final repository = ProfileRepository(
+      storage: storage,
+      providerContentStorage: _MemoryProviderContentStorage(),
+    );
     final updatedAt = DateTime.utc(2026, 9, 10);
     final profile = ProxyProfile(
       id: 'providers',
@@ -38,6 +44,14 @@ void main() {
           content: 'proxies: []',
           updatedAt: updatedAt,
         ),
+        ProviderFile(
+          name: 'custom',
+          kind: ProviderFileKind.rule,
+          url: 'https://example.com/custom.yaml',
+          content: 'payload: []',
+          behavior: 'domain',
+          updatedAt: updatedAt,
+        ),
       ],
       updatedAt: updatedAt,
       subscriptionUrl: 'https://example.com/sub.yaml',
@@ -49,12 +63,13 @@ void main() {
     final loaded = await repository.load();
 
     expect(loaded.activeProfile.sourceContent, profile.sourceContent);
-    expect(loaded.activeProfile.providerFiles.single.name, 'airport');
+    expect(loaded.activeProfile.providerFiles.first.name, 'airport');
     expect(
-      loaded.activeProfile.providerFiles.single.kind,
+      loaded.activeProfile.providerFiles.first.kind,
       ProviderFileKind.proxy,
     );
-    expect(loaded.activeProfile.providerFiles.single.content, 'proxies: []');
+    expect(loaded.activeProfile.providerFiles.first.content, 'proxies: []');
+    expect(loaded.activeProfile.providerFiles.last.behavior, 'domain');
   });
 
   test('uses the default profile when saved data is invalid', () async {
@@ -112,5 +127,20 @@ class _MemoryProfileStorage implements ProfileStorage {
   @override
   Future<void> write(String value) async {
     this.value = value;
+  }
+}
+
+class _MemoryProviderContentStorage implements ProviderContentStorage {
+  final Map<String, List<ProviderFile>> _files = {};
+
+  @override
+  Future<List<ProviderFile>> read(
+    String profileId,
+    List<ProviderFile> files,
+  ) async => _files[profileId] ?? files;
+
+  @override
+  Future<void> write(String profileId, List<ProviderFile> files) async {
+    _files[profileId] = files;
   }
 }

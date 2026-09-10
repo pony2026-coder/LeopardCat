@@ -70,7 +70,7 @@ void main() {
     expect(refreshed.content, validContent);
   });
 
-  test('downloads and expands proxy and rule providers', () async {
+  test('downloads providers and keeps rule providers compact', () async {
     final client = _RoutingSubscriptionClient({
       'https://example.com/sub.yaml': '''
 proxy-providers:
@@ -114,8 +114,17 @@ payload:
       name: 'Provider 订阅',
       url: Uri.parse('https://example.com/sub.yaml'),
     );
-    final config =
-        const ClashToSingboxTransformer().transformYaml(profile.content);
+    const transformer = ClashToSingboxTransformer();
+    final config = transformer.transformYaml(
+      profile.content,
+      ruleProviders: const [
+        RuleProviderReference(
+          name: 'custom',
+          tag: 'provider-custom',
+          path: '/tmp/custom.json',
+        ),
+      ],
+    );
     final outbounds =
         (config['outbounds'] as List).cast<Map<String, dynamic>>();
     final route = config['route'] as Map<String, dynamic>;
@@ -132,6 +141,7 @@ payload:
     expect(profile.providerFiles.first.content, contains('Provider Node'));
     expect(profile.providerFiles.last.name, 'custom');
     expect(profile.providerFiles.last.kind, ProviderFileKind.rule);
+    expect(profile.providerFiles.last.behavior, 'classical');
     expect(outbounds.any((outbound) => outbound['tag'] == 'Provider Node'),
         isTrue);
     expect(
@@ -139,15 +149,15 @@ payload:
           .firstWhere((outbound) => outbound['tag'] == 'Proxy')['outbounds'],
       ['Provider Node'],
     );
-    expect(rules[1], {
-      'domain_suffix': ['.example.org'],
-      'domain': ['example.org'],
-      'outbound': 'Proxy'
-    });
-    expect(rules[2], {
-      'ip_cidr': ['10.0.0.0/8'],
-      'outbound': 'Proxy'
-    });
+    expect(rules[1], {'rule_set': 'provider-custom', 'outbound': 'Proxy'});
+    expect(rules[2], {'outbound': 'DIRECT'});
+    final providerRuleSet = (route['rule_set'] as List)
+        .cast<Map<String, dynamic>>()
+        .singleWhere((ruleSet) => ruleSet['tag'] == 'provider-custom');
+    expect(providerRuleSet['type'], 'local');
+    expect(providerRuleSet['format'], 'source');
+    expect(providerRuleSet['path'], '/tmp/custom.json');
+    expect(profile.content.length, lessThan(700));
   });
 
   test('refreshes one provider file without downloading the others', () async {
@@ -204,6 +214,49 @@ rules: []
     expect(refreshed.content, contains('Refreshed Node'));
   });
 
+  test('rebuilds an old expanded profile from cached provider files',
+      () async {
+    const source = '''
+proxies: []
+proxy-groups: []
+rule-providers:
+  custom:
+    type: http
+    behavior: domain
+    url: ./custom.yaml
+rules:
+  - RULE-SET,custom,DIRECT
+''';
+    const service = SubscriptionService(
+      client: _FakeSubscriptionClient('unused'),
+      transformer: ClashToSingboxTransformer(),
+    );
+    final oldProfile = ProxyProfile(
+      id: 'legacy',
+      name: 'Legacy',
+      content: 'rules:\n  - DOMAIN,expanded.example,DIRECT',
+      sourceContent: source,
+      subscriptionUrl: 'https://example.com/sub.yaml',
+      updatedAt: DateTime.utc(2026),
+      providerFiles: [
+        ProviderFile(
+          name: 'custom',
+          kind: ProviderFileKind.rule,
+          url: 'https://example.com/custom.yaml',
+          content: 'payload:\n  - +.example.com',
+          behavior: 'domain',
+          updatedAt: DateTime.utc(2026),
+        ),
+      ],
+    );
+
+    final rebuilt = await service.rebuildCachedProviders(oldProfile);
+
+    expect(rebuilt.content, contains('RULE-SET,custom,DIRECT'));
+    expect(rebuilt.content, isNot(contains('expanded.example')));
+    expect(rebuilt.content.length, lessThan(250));
+  });
+
   test('rejects unsupported local providers', () async {
     const service = SubscriptionService(
       client: _FakeSubscriptionClient('''
@@ -235,7 +288,8 @@ rules: []
     );
   });
 
-  test('expands domain and ipcidr rule provider behavior', () async {
+  test('converts domain and ipcidr rule provider payloads to source rules',
+      () async {
     final client = _RoutingSubscriptionClient({
       'https://example.com/sub.yaml': '''
 proxies: []
@@ -273,14 +327,38 @@ payload:
       name: '规则 Provider',
       url: Uri.parse('https://example.com/sub.yaml'),
     );
-    final route = const ClashToSingboxTransformer()
-        .transformYaml(profile.content)['route'] as Map<String, dynamic>;
-    final rules = (route['rules'] as List).cast<Map<String, dynamic>>();
+    final domainProvider = profile.providerFiles
+        .firstWhere((file) => file.name == 'domains');
+    final networkProvider = profile.providerFiles
+        .firstWhere((file) => file.name == 'networks');
+    const transformer = ClashToSingboxTransformer();
 
-    expect(rules[1]['domain_suffix'], ['.example.com']);
-    expect(rules[2]['domain'], ['exact.example.org']);
-    expect(rules[3]['ip_cidr'], ['192.0.2.0/24']);
-    expect(rules[4]['ip_cidr'], ['2001:db8::/32']);
+    expect(
+      transformer.ruleProviderSource(
+        domainProvider.content,
+        behavior: domainProvider.behavior!,
+      ),
+      {
+        'version': 1,
+        'rules': [
+          {'domain_suffix': ['example.com']},
+          {'domain': ['exact.example.org']},
+        ],
+      },
+    );
+    expect(
+      transformer.ruleProviderSource(
+        networkProvider.content,
+        behavior: networkProvider.behavior!,
+      ),
+      {
+        'version': 1,
+        'rules': [
+          {'ip_cidr': ['192.0.2.0/24']},
+          {'ip_cidr': ['2001:db8::/32']},
+        ],
+      },
+    );
   });
 }
 

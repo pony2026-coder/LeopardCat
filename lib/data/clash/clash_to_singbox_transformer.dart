@@ -31,18 +31,44 @@ class StaticResource {
       };
 }
 
+class RuleProviderReference {
+  const RuleProviderReference({
+    required this.name,
+    required this.tag,
+    required this.path,
+  });
+
+  final String name;
+  final String tag;
+  final String path;
+
+  Map<String, String> toRuleSet() => {
+        'type': 'local',
+        'tag': tag,
+        'format': 'source',
+        'path': path,
+      };
+}
+
 class ClashToSingboxTransformer {
   const ClashToSingboxTransformer({this.fragment = const FragmentOptions()});
 
   final FragmentOptions fragment;
 
-  Map<String, dynamic> transformYaml(String source) {
+  Map<String, dynamic> transformYaml(
+    String source, {
+    Iterable<RuleProviderReference> ruleProviders = const [],
+  }) {
     final document = loadYaml(source);
-    return transform(document);
+    return transform(document, ruleProviders: ruleProviders);
   }
 
-  String transformYamlToJson(String source) {
-    return const JsonEncoder.withIndent('  ').convert(transformYaml(source));
+  String transformYamlToJson(
+    String source, {
+    Iterable<RuleProviderReference> ruleProviders = const [],
+  }) {
+    return const JsonEncoder.withIndent('  ')
+        .convert(transformYaml(source, ruleProviders: ruleProviders));
   }
 
   List<StaticResource> staticResources(String source) {
@@ -50,11 +76,17 @@ class ClashToSingboxTransformer {
     return _staticResources(_map(document)['rules']);
   }
 
-  Map<String, dynamic> transform(Object? source) {
+  Map<String, dynamic> transform(
+    Object? source, {
+    Iterable<RuleProviderReference> ruleProviders = const [],
+  }) {
     final config = _map(source);
     final proxies = _list(config['proxies']);
     final proxyGroups = _list(config['proxy-groups']);
     final resources = _staticResources(config['rules']);
+    final ruleProviderReferences = {
+      for (final provider in ruleProviders) provider.name: provider,
+    };
     final outbounds = <Map<String, dynamic>>[
       ...proxies.map(_proxyToOutbound),
       ...proxyGroups.map(_groupToOutbound),
@@ -87,11 +119,14 @@ class ClashToSingboxTransformer {
       'route': {
         'auto_detect_interface': true,
         'final': _finalOutbound(config, proxyGroups),
-        if (resources.isNotEmpty)
-          'rule_set': resources.map((resource) => resource.toRuleSet()).toList(),
+        if (resources.isNotEmpty || ruleProviderReferences.isNotEmpty)
+          'rule_set': [
+            ...resources.map((resource) => resource.toRuleSet()),
+            ...ruleProviderReferences.values.map((provider) => provider.toRuleSet()),
+          ],
         'rules': [
           {'action': 'sniff'},
-          ..._rulesToSingbox(config['rules']),
+          ..._rulesToSingbox(config['rules'], ruleProviderReferences),
         ],
       },
       'experimental': {
@@ -213,7 +248,10 @@ class ClashToSingboxTransformer {
     return {'type': 'selector', 'tag': tag, 'outbounds': tags};
   }
 
-  List<Map<String, dynamic>> _rulesToSingbox(Object? value) {
+  List<Map<String, dynamic>> _rulesToSingbox(
+    Object? value,
+    Map<String, RuleProviderReference> ruleProviders,
+  ) {
     final rules = <Map<String, dynamic>>[];
     for (final entry in _list(value)) {
       final fields = _stringList(entry);
@@ -222,6 +260,10 @@ class ClashToSingboxTransformer {
       final target = fields.last;
       final rule = <String, dynamic>{};
       switch (kind) {
+        case 'RULE-SET':
+          final provider = ruleProviders[fields[1]];
+          if (provider == null) continue;
+          rule['rule_set'] = provider.tag;
         case 'DOMAIN':
           rule['domain'] = [fields[1]];
         case 'DOMAIN-SUFFIX':
@@ -250,6 +292,48 @@ class ClashToSingboxTransformer {
       rules.add(rule);
     }
     return rules;
+  }
+
+  Map<String, dynamic> ruleProviderSource(
+    String content, {
+    required String behavior,
+  }) {
+    final document = loadYaml(content);
+    final payload = _list(_map(document)['payload']);
+    if (payload.isEmpty) {
+      throw const FormatException('Rule provider has no payload');
+    }
+    final rules = <Map<String, dynamic>>[];
+    for (final entry in payload) {
+      final rule = _providerEntryToRule(_string(entry), behavior);
+      if (rule != null) rules.add(rule);
+    }
+    if (rules.isEmpty) {
+      throw const FormatException('Rule provider has no supported rules');
+    }
+    return {'version': 1, 'rules': rules};
+  }
+
+  Map<String, dynamic>? _providerEntryToRule(String value, String behavior) {
+    final normalizedBehavior = behavior.toLowerCase();
+    if (normalizedBehavior == 'domain') {
+      return value.startsWith('+.')
+          ? {'domain_suffix': [value.substring(2)]}
+          : {'domain': [value]};
+    }
+    if (normalizedBehavior == 'ipcidr') {
+      return {'ip_cidr': [value]};
+    }
+    if (normalizedBehavior != 'classical') return null;
+    final fields = value.split(',').map((item) => item.trim()).toList();
+    if (fields.length < 2) return null;
+    return switch (fields.first.toUpperCase()) {
+      'DOMAIN' => {'domain': [fields[1]]},
+      'DOMAIN-SUFFIX' => {'domain_suffix': [fields[1].replaceFirst(RegExp(r'^\\.'), '')]},
+      'DOMAIN-KEYWORD' => {'domain_keyword': [fields[1]]},
+      'IP-CIDR' || 'IP-CIDR6' => {'ip_cidr': [fields[1]]},
+      _ => null,
+    };
   }
 
   List<StaticResource> _staticResources(Object? value) {

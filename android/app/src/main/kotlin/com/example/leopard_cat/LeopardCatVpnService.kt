@@ -66,7 +66,7 @@ class LeopardCatVpnService : VpnService() {
             ACTION_START -> {
                 uplinkBytes = 0
                 downlinkBytes = 0
-                val config = intent.getStringExtra(EXTRA_CONFIG_JSON)
+                val config = readConfig(intent)
                 status = if (config == null) {
                     Log.e(TAG, "ACTION_START: missing config")
                     EngineResult.INVALID_CONFIG
@@ -77,7 +77,7 @@ class LeopardCatVpnService : VpnService() {
                 Log.i(TAG, "ACTION_START -> status=$status")
             }
             ACTION_RELOAD -> {
-                val config = intent.getStringExtra(EXTRA_CONFIG_JSON)
+                val config = readConfig(intent)
                 status = if (config == null) {
                     Log.e(TAG, "ACTION_RELOAD: missing config")
                     EngineResult.INVALID_CONFIG
@@ -96,6 +96,16 @@ class LeopardCatVpnService : VpnService() {
             }
         }
         return START_STICKY
+    }
+
+    private fun readConfig(intent: Intent): String? {
+        val path = intent.getStringExtra(EXTRA_CONFIG_PATH)
+        if (path != null) {
+            return runCatching { java.io.File(path).readText() }
+                .onFailure { Log.e(TAG, "failed to read runtime config", it) }
+                .getOrNull()
+        }
+        return intent.getStringExtra(EXTRA_CONFIG_JSON)
     }
 
     override fun onDestroy() {
@@ -128,6 +138,7 @@ class LeopardCatVpnService : VpnService() {
         const val ACTION_RELOAD = "com.example.leopard_cat.action.RELOAD"
         const val ACTION_STOP = "com.example.leopard_cat.action.STOP"
         const val EXTRA_CONFIG_JSON = "config_json"
+        const val EXTRA_CONFIG_PATH = "config_path"
 
         @Volatile
         var status: EngineResult = EngineResult.STOPPED
